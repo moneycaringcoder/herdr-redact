@@ -1,0 +1,15 @@
+# Every change requests a review from the maintainer automatically.
+# This is about staying informed, not about gatekeeping: contributions are
+# welcome and reviewed personally.
+*       @moneycaringcoder
+
+# The two guarantees the project rests on live here, and get the closest
+# reading: a secret value never leaves the scanner, and nothing the plugin
+# produces can carry one.
+/src/scan.rs             @moneycaringcoder
+/src/model.rs            @moneycaringcoder
+/tests/never_leaks.rs    @moneycaringcoder
+/tests/scan_corpus.rs    @moneycaringcoder
+
+# Edits a file the plugin does not own, with a backup and a rollback.
+/src/setup.rs            @moneycaringcoder

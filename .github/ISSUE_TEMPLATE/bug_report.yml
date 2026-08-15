@@ -1,0 +1,86 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Please do not paste a real credential.** For a false positive, replace
+        the value with something the same shape and length. For a missed
+        detection, a structurally valid fake is exactly as useful as the real
+        thing. Redact paths and agent names freely too — a report with
+        `/home/you/repos/app` in it is just as useful.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+      placeholder: |
+        A pane printed an obviously fake AWS key and no badge appeared.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The line that did or did not trigger it, with the value replaced by
+        something the same shape. Whether the pane was running an agent, whether
+        the watcher was enabled, and anything unusual about the output (very
+        long lines, heavy ANSI, an alternate-screen TUI).
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: json
+    attributes:
+      label: Output of `redact --json`
+      description: >
+        This carries the findings, the counts and the notes the plugin actually
+        produced, which is usually enough to find the problem on its own. It
+        contains no secret values — only masked previews.
+      render: json
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `redact --version` and `herdr --version`.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >
+        If this involves the sidebar, the `[ui.sidebar.spaces]` and
+        `[ui.sidebar.agents]` parts of your herdr `config.toml`. If you have a
+        plugin `config.json`, that too — with any private `patterns` regexes
+        removed if they are sensitive in themselves.
+      render: toml
+
+  - type: checkboxes
+    id: no-secrets
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have not pasted a real credential anywhere in this report
+          required: true

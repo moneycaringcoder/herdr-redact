@@ -1,0 +1,71 @@
+name: Detection rule
+description: A credential format redact should catch, or should stop catching
+labels: ["detection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most useful kind of issue this project gets.
+
+        **Never paste a real credential**, not even an expired one, not even your
+        own. A structurally valid fake — the right prefix, the right length, the
+        right charset, with `EXAMPLE` or repeated characters as filler — is
+        exactly what the test corpus needs anyway.
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Which way
+      options:
+        - A credential that is not being caught
+        - Something ordinary that is being flagged as a credential
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider or format
+      placeholder: e.g. Fastly API token, or "our internal service tokens"
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: A fake example of the format
+      description: >
+        Structurally valid, obviously not real. This goes straight into the test
+        corpus if the rule is accepted.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Where the format is documented
+      description: >
+        A link, or a description of how you know the prefix and length. Rules
+        anchored on a distinctive prefix are much safer than rules anchored on
+        length and charset alone.
+
+  - type: textarea
+    id: false-positives
+    attributes:
+      label: What ordinary output could this fire on
+      description: >
+        The question every detection rule is judged by here. A scanner that
+        cries wolf gets uninstalled and then protects nobody, so a rule that
+        could fire on build output, a hash, or a UUID needs to say what stops it.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Implementation
+      options:
+        - label: I would be willing to implement this
+        - label: I have not pasted a real credential in this report
+          required: true

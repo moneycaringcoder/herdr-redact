@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest something redact should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Worth knowing before you write: redact is
+        deliberately narrow, it never writes to a pane or acts on a finding, it
+        never stores a secret value, and it makes no network calls. Suggestions
+        that need one of those are likely to be declined — see the Scope section
+        of CONTRIBUTING.md.
+
+        If your idea is about *what* gets detected rather than what the plugin
+        does, please use the Detection rule template instead.
+
+        If you are willing to implement it, say so. "Would you take a PR that
+        does X?" gets a fast answer.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you were trying to do when you wanted this. Concrete situations
+        make for much better features than abstract capabilities.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: What redact would do differently, and where you would expect to see it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including anything that already gets you part of the way there.
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Implementation
+      options:
+        - label: I would be willing to implement this
