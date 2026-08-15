@@ -122,6 +122,11 @@ fn rules(config: &config::Config) -> Result<()> {
     for (name, confidence) in &rules.names {
         println!("{name}\t{}", confidence.as_str());
     }
+    // A note here usually means a setting the user believes is doing something
+    // and is not. Printing it on the rule listing is where they will look.
+    for note in &rules.notes {
+        eprintln!("redact: {note}");
+    }
     Ok(())
 }
 

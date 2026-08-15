@@ -252,14 +252,33 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
         // AWS access key IDs are base32, so the tail is uppercase alphanumeric.
         // `check` rejects a run of a single character, which is what a redacted
         // key or an ASCII banner looks like.
+        //
+        // `AKIA` (long-term) and `ASIA` (temporary) are the only two prefixes
+        // that introduce something a caller can authenticate with. The rest of
+        // the `A…A` family is split out below.
         Rule::new(
             "aws_access_key_id",
             "AWS access key ID",
             Confidence::Strong,
-            r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16}\b",
+            r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",
         )
         .standalone()
-        .check(is_aws_key_id),
+        .check(has_varied_body),
+        // `AIDA`, `AROA` and friends are unique *identifiers* for a user, role,
+        // group or managed policy. They are not credentials: `aws sts
+        // get-caller-identity` and most IAM output print them in the clear, all
+        // day, and treating them as a secret is the cry-wolf failure this plugin
+        // exists to avoid. They are still worth a quiet word, because an
+        // identifier in a screenshot tells a reader which account they are
+        // looking at — so `Weak`, and labelled as an identifier.
+        Rule::new(
+            "aws_principal_id",
+            "AWS principal ID (identifier, not a credential)",
+            Confidence::Weak,
+            r"\b(?:AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16,17}",
+        )
+        .standalone()
+        .check(has_varied_body),
         // Forty base64 characters on their own is a false-positive machine, so
         // this one only fires next to the key name that AWS itself uses.
         Rule::new(
@@ -447,9 +466,10 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
 // Structural checks
 // ---------------------------------------------------------------------------
 
-/// AWS key IDs are base32 output, so a run of one character is a redaction, a
-/// banner, or somebody's placeholder — never a key.
-fn is_aws_key_id(caps: &Captures<'_>) -> bool {
+/// AWS key IDs and principal IDs are base32 output, so a run of one character
+/// after the prefix is a redaction, a banner, or somebody's placeholder — never
+/// a real identifier.
+fn has_varied_body(caps: &Captures<'_>) -> bool {
     let value = &caps[0];
     let tail = &value[4..];
     !tail.bytes().all(|byte| byte == tail.as_bytes()[0])

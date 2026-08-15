@@ -182,9 +182,10 @@ fn summary_lines(report: &Report) -> Vec<String> {
             ));
         } else if report.panes_skipped > 0 {
             lines.push(format!(
-                "Nothing was scanned: {} skipped, because none of them is running an agent. \
-                 Set `scan_all_panes` in the config file, or pass --all-panes, to scan every \
-                 pane rather than only agent panes.",
+                "Nothing was scanned: {} skipped. A pane is skipped when it is not running an \
+                 agent, when the config's `ignore_panes` names it, or when it is this pane. Set \
+                 `scan_all_panes` in the config file, or pass --all-panes, to scan every pane \
+                 rather than only agent panes.",
                 panes(report.panes_skipped)
             ));
         } else {
@@ -201,10 +202,21 @@ fn summary_lines(report: &Report) -> Vec<String> {
         ));
         if report.panes_skipped > 0 {
             lines.push(format!(
-                "{} skipped, because they are not running an agent; --all-panes widens the scan.",
+                "{} skipped: not running an agent, named in `ignore_panes`, or this pane.",
                 panes(report.panes_skipped)
             ));
         }
+    }
+
+    // Never folded into the skipped count. "We chose not to look" and "we tried
+    // and failed" are opposite claims, and a reader who cannot tell them apart
+    // will read a blind scan as a quiet one.
+    if report.panes_unread > 0 {
+        lines.push(format!(
+            "{} could not be read at all, so anything printed there is unexamined. The notes at \
+             the end say why.",
+            panes(report.panes_unread)
+        ));
     }
 
     if report.panes_truncated > 0 {
@@ -493,6 +505,7 @@ pub fn report_json(report: &Report) -> String {
             "acknowledged": acknowledged,
             "panes_scanned": report.panes_scanned,
             "panes_skipped": report.panes_skipped,
+            "panes_unread": report.panes_unread,
             "panes_truncated": report.panes_truncated,
             "notes": report.notes.len(),
         },

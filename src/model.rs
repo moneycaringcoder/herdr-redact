@@ -248,8 +248,17 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub panes_scanned: usize,
     /// Panes herdr reported but that we chose not to read (not an agent pane,
-    /// with `scan_all_panes` off).
+    /// with `scan_all_panes` off; on the config's ignore list; or this process's
+    /// own pane).
     pub panes_skipped: usize,
+    /// Panes we meant to read and could not — the read failed, or the cycle ran
+    /// out of time before reaching them.
+    ///
+    /// Separate from `panes_skipped` because the two mean opposite things to a
+    /// reader: one is "we chose not to look", the other is "we tried and
+    /// failed", and collapsing them is exactly how a blind scanner comes to look
+    /// like a quiet one.
+    pub panes_unread: usize,
     /// Panes whose output was cut short by the `lines` budget.
     pub panes_truncated: usize,
     /// Human-readable problems from this cycle: a pane that vanished, a rule

@@ -199,6 +199,11 @@ pub fn scan_cycle_with_panes(
             Rules::builtin()
         }
     };
+    // Things the rule set wants to say about itself — a configuration flag that
+    // does nothing, for instance. Folded in rather than dropped: a setting the
+    // user believes is protecting them and is not is exactly the kind of silence
+    // this plugin cannot afford.
+    notes.extend(rules.notes.iter().cloned());
 
     // A findings pane that scans itself reports its own masked previews for
     // ever, and every one of them looks like a real finding.
@@ -207,10 +212,26 @@ pub fn scan_cycle_with_panes(
     let mut scanned = 0usize;
     let mut skipped = 0usize;
     let mut truncated = 0usize;
+    let mut failed = 0usize;
+    let mut unread = 0usize;
+
+    // A cycle has to finish. Reading is one round trip per pane, and on a busy
+    // session with thirty panes a slow server can put the total well past any
+    // sane interval — at which point the badge is never pushed at all, because
+    // the cycle that would have pushed it has not returned yet.
+    //
+    // Observed live rather than imagined: with twenty agents running, single
+    // reads exceeded the socket's own 15-second timeout and the whole cycle
+    // failed, leaving findings in the store and no badge on the sidebar.
+    let deadline = Instant::now() + cycle_budget(config);
 
     for pane in &panes {
         if !should_scan(pane, config, own_pane.as_deref()) {
             skipped += 1;
+            continue;
+        }
+        if Instant::now() >= deadline {
+            unread += 1;
             continue;
         }
         let text = match client.read_pane(&pane.pane_id, config.lines) {
@@ -218,21 +239,22 @@ pub fn scan_cycle_with_panes(
             Err(err) => {
                 // An error envelope means the server is healthy and told us
                 // something: a pane that closed under us is data, not a
-                // failure. A transport failure means we are blind, and that has
-                // to propagate rather than render as a clean session.
+                // failure.
+                //
+                // A transport failure used to propagate here, on the reasoning
+                // that we are blind and must say so. Live running showed that
+                // to be the wrong call: one slow pane read then costs every
+                // other pane its badge, and the cycle that would have reported
+                // the failure never completes. The snapshot call above is the
+                // real liveness check — if the server is genuinely gone, it
+                // fails first and this loop is never reached.
+                failed += 1;
                 match herdr::error_code(&*err) {
-                    Some("pane_not_found") => {
-                        skipped += 1;
-                        notes.push(format!(
-                            "pane {} closed while it was being read",
-                            pane.pane_id
-                        ));
-                    }
-                    Some(_) => {
-                        skipped += 1;
-                        notes.push(format!("pane {} could not be read: {err}", pane.pane_id));
-                    }
-                    None => return Err(err),
+                    Some("pane_not_found") => notes.push(format!(
+                        "pane {} closed while it was being read",
+                        pane.pane_id
+                    )),
+                    _ => notes.push(format!("pane {} could not be read: {err}", pane.pane_id)),
                 }
                 continue;
             }
@@ -258,14 +280,45 @@ pub fn scan_cycle_with_panes(
         }
     }
 
+    if unread > 0 {
+        notes.push(format!(
+            "{unread} pane(s) were not read before this cycle's {:?} budget ran out; they will be \
+             read on the next cycle",
+            cycle_budget(config)
+        ));
+    }
+    // Every read failing is a different thing from a few failing, and it is the
+    // shape a wedged or overloaded server takes. Say so in one line rather than
+    // leaving the user to count the per-pane notes.
+    if failed > 0 && scanned == 0 {
+        notes.push(
+            "every pane read failed, so nothing was scanned this cycle — the findings below are \
+             from an earlier one"
+                .to_string(),
+        );
+    }
+
     let live: Vec<String> = panes.iter().map(|pane| pane.pane_id.clone()).collect();
     store.prune_to(&live);
 
     let mut report = store.report(notes);
     report.panes_scanned = scanned;
     report.panes_skipped = skipped;
+    report.panes_unread = failed + unread;
     report.panes_truncated = truncated;
     Ok((report, panes))
+}
+
+/// How long one cycle may spend reading panes.
+///
+/// Two intervals, floored at half a minute so a one-second interval does not
+/// starve a large session, and ceilinged so a very long interval does not let a
+/// single wedged cycle run for an hour.
+fn cycle_budget(config: &Config) -> Duration {
+    config
+        .interval
+        .saturating_mul(2)
+        .clamp(Duration::from_secs(30), Duration::from_secs(120))
 }
 
 /// One cycle over a fresh connection, for `--once` and `--json`.

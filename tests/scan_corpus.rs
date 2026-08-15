@@ -43,6 +43,16 @@ const POSITIVE: &[Vector] = &[
         value: "AKIAIOSFODNN7EXAMPLE",
         preview: "AKI\u{2026}PLE",
     },
+    // A principal ID is 21 characters — four for the prefix, seventeen of
+    // base32 — where an access key ID is twenty. It identifies a role, user,
+    // group or policy; it authenticates nothing.
+    Vector {
+        rule: "aws_principal_id",
+        confidence: Confidence::Weak,
+        text: "\"UserId\": \"AROAEXAMPLEEXAMPLEEXA\"",
+        value: "AROAEXAMPLEEXAMPLEEXA",
+        preview: "ARO\u{2026}EXA",
+    },
     Vector {
         rule: "aws_secret_access_key",
         confidence: Confidence::Strong,
@@ -329,6 +339,15 @@ fn builtin() -> Rules {
     Rules::builtin()
 }
 
+/// The vector for one rule, by name. Looked up rather than indexed so that
+/// adding a vector cannot silently repoint a test at a different rule.
+fn vector(rule: &str) -> &'static Vector {
+    POSITIVE
+        .iter()
+        .find(|vector| vector.rule == rule)
+        .expect("every rule named in a test has a vector")
+}
+
 /// Wraps a vector so every value sits on line 3, after a blank line.
 fn framed(text: &str) -> String {
     format!("starting build\n\n{text}\n\nbuild finished\n")
@@ -442,7 +461,7 @@ fn jwt_needs_a_header_that_decodes_to_json_with_alg() {
     )
     .is_empty());
     // The documented example, whose header is `{"alg":"HS256","typ":"JWT"}`.
-    let matches = scan(POSITIVE[11].text, &rules, &KEY);
+    let matches = scan(vector("jwt").text, &rules, &KEY);
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].pattern, "jwt");
 }
@@ -463,6 +482,60 @@ fn provider_prefixes_inside_a_longer_token_are_ignored() {
             scan(text, &rules, &KEY).is_empty(),
             "matched inside a longer token: {text}"
         );
+    }
+}
+
+/// The one piece of ordinary AWS output that is *not* in the negative corpus
+/// above, and why.
+///
+/// `aws sts get-caller-identity` prints this, verbatim, several times a day in
+/// any pane doing AWS work:
+///
+/// ```text
+/// $ aws sts get-caller-identity
+/// {
+///     "UserId": "AROAZ3MXVX7QJH2WPKNSU:deploy-session",
+///     "Account": "123456789012",
+///     "Arn": "arn:aws:sts::123456789012:assumed-role/deploy/deploy-session"
+/// }
+/// ```
+///
+/// The `AROA…` value is a principal ID: it names a role, it authenticates
+/// nothing, and nobody can do anything with it but recognise the account. Under
+/// this plugin's own standard, reporting it as a credential is a false positive,
+/// which is why `aws_access_key_id` no longer covers those prefixes. Dropping it
+/// entirely would be wrong too — an account identifier in a screenshot is worth
+/// knowing about — so it reports at `Weak`, with a label that says what it is.
+/// A weak finding earns its own badge token and its own colour, so a user can
+/// tell this apart from a live key at a glance without reading the table.
+#[test]
+fn aws_principal_ids_report_as_weak_identifiers_not_as_keys() {
+    let rules = builtin();
+    let output = "$ aws sts get-caller-identity\n{\n    \"UserId\": \"AROAZ3MXVX7QJH2WPKNSU:deploy-session\",\n    \"Account\": \"123456789012\",\n    \"Arn\": \"arn:aws:sts::123456789012:assumed-role/deploy/deploy-session\"\n}\n";
+    let matches = scan(output, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "aws_principal_id");
+    assert_eq!(matches[0].confidence, Confidence::Weak);
+    assert_eq!(matches[0].line, 3);
+    assert_eq!(matches[0].value_len, 21);
+    assert!(matches[0].label.contains("identifier"));
+
+    // Every prefix in the family lands on the same rule, at the same level.
+    for prefix in ["AGPA", "AIDA", "AROA", "AIPA", "ANPA", "ANVA", "APKA"] {
+        let text = format!("{prefix}Z3MXVX7QJH2WPKNSU");
+        let matches = scan(&text, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{prefix}: {matches:?}");
+        assert_eq!(matches[0].pattern, "aws_principal_id", "{prefix}");
+        assert_eq!(matches[0].confidence, Confidence::Weak, "{prefix}");
+    }
+
+    // The two prefixes that do introduce a credential stay Strong.
+    for prefix in ["AKIA", "ASIA"] {
+        let text = format!("{prefix}Z3MXVX7QJH2WPKNS");
+        let matches = scan(&text, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{prefix}: {matches:?}");
+        assert_eq!(matches[0].pattern, "aws_access_key_id", "{prefix}");
+        assert_eq!(matches[0].confidence, Confidence::Strong, "{prefix}");
     }
 }
 
@@ -613,7 +686,9 @@ fn matches_come_back_in_the_order_they_appear() {
     let rules = builtin();
     let text = format!(
         "{}\n{}\n{}\n",
-        POSITIVE[2].text, POSITIVE[0].text, POSITIVE[17].text
+        vector("github_token").text,
+        vector("aws_access_key_id").text,
+        vector("gitlab_pat").text
     );
     let matches = scan(&text, &rules, &KEY);
     let lines: Vec<usize> = matches.iter().map(|m| m.line).collect();
@@ -644,7 +719,7 @@ fn overlapping_matches_keep_the_stronger_rule() {
 #[test]
 fn a_bearer_header_carrying_a_jwt_is_one_finding() {
     let rules = builtin();
-    let text = format!("Authorization: Bearer {}", POSITIVE[11].value);
+    let text = format!("Authorization: Bearer {}", vector("jwt").value);
     let matches = scan(&text, &rules, &KEY);
     assert_eq!(matches.len(), 1, "{matches:?}");
     assert_eq!(matches[0].pattern, "jwt");
@@ -767,7 +842,7 @@ fn the_allowlist_suppresses_a_finding_by_its_value() {
         vec!["0123456789abcdefghijklmnopqrstuvwxyz".to_string()],
     );
     let rules = Rules::compile(&config).expect("compiles");
-    assert!(scan(POSITIVE[2].text, &rules, &KEY).is_empty());
+    assert!(scan(vector("github_token").text, &rules, &KEY).is_empty());
     // A different value from the same rule still reports.
     assert_eq!(
         scan("ghp_zzzz456789abcdefghijklmnopqrstuvwxyz", &rules, &KEY).len(),
@@ -779,10 +854,10 @@ fn the_allowlist_suppresses_a_finding_by_its_value() {
 fn the_allowlist_suppresses_a_finding_by_its_line() {
     let config = config_with(Vec::new(), vec!["fixtures/credentials".to_string()]);
     let rules = Rules::compile(&config).expect("compiles");
-    let noisy = format!("fixtures/credentials.env: {}", POSITIVE[2].text);
+    let noisy = format!("fixtures/credentials.env: {}", vector("github_token").text);
     assert!(scan(&noisy, &rules, &KEY).is_empty());
     // The same value on a line the allowlist does not cover still reports.
-    assert_eq!(scan(POSITIVE[2].text, &rules, &KEY).len(), 1);
+    assert_eq!(scan(vector("github_token").text, &rules, &KEY).len(), 1);
 }
 
 #[test]
@@ -795,7 +870,7 @@ fn the_assignment_heuristic_can_be_turned_off() {
     assert!(!rules.names.iter().any(|(name, _)| name == "env_assignment"));
     assert!(scan("MY_SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6", &rules, &KEY).is_empty());
     // Strong rules are unaffected.
-    assert_eq!(scan(POSITIVE[2].text, &rules, &KEY).len(), 1);
+    assert_eq!(scan(vector("github_token").text, &rules, &KEY).len(), 1);
 }
 
 #[test]
@@ -914,8 +989,8 @@ fn scanning_is_deterministic() {
 fn the_digest_is_keyed() {
     let rules = builtin();
     let other: DigestKey = [9u8; 16];
-    let mine = scan(POSITIVE[2].text, &rules, &KEY);
-    let theirs = scan(POSITIVE[2].text, &rules, &other);
+    let mine = scan(vector("github_token").text, &rules, &KEY);
+    let theirs = scan(vector("github_token").text, &rules, &other);
     assert_ne!(mine[0].digest, theirs[0].digest);
     assert_eq!(mine[0].preview, theirs[0].preview);
 }
@@ -924,7 +999,11 @@ fn the_digest_is_keyed() {
 fn the_same_value_twice_is_two_findings_on_two_lines() {
     let rules = builtin();
     let matches = scan(
-        &format!("{}\n{}", POSITIVE[2].text, POSITIVE[2].text),
+        &format!(
+            "{}\n{}",
+            vector("github_token").text,
+            vector("github_token").text
+        ),
         &rules,
         &KEY,
     );
