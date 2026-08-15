@@ -499,9 +499,21 @@ Worth knowing before you trust it:
 
 ## Contributing
 
-Bug reports, questions and documentation fixes are welcome through the issue tracker. A missed
-credential format is a useful report; please describe the *shape* of what was missed rather than
-pasting a real one.
+Bug reports, questions, documentation fixes and new detection rules are all welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for what makes a change easy to merge, and in particular for the
+two rules the project rests on: a secret value never leaves the scanner, and precision beats recall
+every time.
+
+**Please never paste a real credential** — not in an issue, not in a pull request, not in a test
+vector, not even an expired one. A missed format is a useful report and a structurally valid fake is
+exactly as useful as the real thing. For a false positive, replace the value with something the same
+shape.
+
+Found a way to make this plugin leak the thing it is meant to protect? That is a security issue, not
+a bug report: see [SECURITY.md](SECURITY.md), which also carries the full threat model — a table of
+everything the plugin holds and where it lives.
+
+By taking part you agree to the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Licence
 
