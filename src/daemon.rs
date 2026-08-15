@@ -182,6 +182,20 @@ pub fn scan_cycle_with_panes(
     config: &Config,
     store: &mut Store,
 ) -> Result<(Report, Vec<PaneRef>)> {
+    scan_cycle_within(client, config, store, cycle_budget(config))
+}
+
+/// [`scan_cycle_with_panes`] with an explicit reading budget.
+///
+/// Exists so the round-robin can be tested in milliseconds rather than in the
+/// thirty seconds [`cycle_budget`] floors at. Production callers use the derived
+/// budget; nothing else should pass one.
+pub fn scan_cycle_within(
+    client: &mut Herdr,
+    config: &Config,
+    store: &mut Store,
+    budget: Duration,
+) -> Result<(Report, Vec<PaneRef>)> {
     let panes = client.panes()?;
     let now = crate::model::now();
     let mut notes = Vec::new();
@@ -210,10 +224,16 @@ pub fn scan_cycle_with_panes(
     let own_pane = config::non_empty_env("HERDR_PANE_ID");
 
     let mut scanned = 0usize;
-    let mut skipped = 0usize;
     let mut truncated = 0usize;
     let mut failed = 0usize;
     let mut unread = 0usize;
+
+    // Split before reading, so the rotation below is over panes we actually mean
+    // to read rather than over the whole session.
+    let (readable, skipped): (Vec<&PaneRef>, Vec<&PaneRef>) = panes
+        .iter()
+        .partition(|pane| should_scan(pane, config, own_pane.as_deref()));
+    let skipped = skipped.len();
 
     // A cycle has to finish. Reading is one round trip per pane, and on a busy
     // session with thirty panes a slow server can put the total well past any
@@ -223,17 +243,23 @@ pub fn scan_cycle_with_panes(
     // Observed live rather than imagined: with twenty agents running, single
     // reads exceeded the socket's own 15-second timeout and the whole cycle
     // failed, leaving findings in the store and no badge on the sidebar.
-    let deadline = Instant::now() + cycle_budget(config);
+    let deadline = Instant::now() + budget;
 
-    for pane in &panes {
-        if !should_scan(pane, config, own_pane.as_deref()) {
-            skipped += 1;
-            continue;
-        }
+    // Start where the last cycle stopped. Without this the budget would cut the
+    // list at the same place every time: the first handful of panes read for
+    // ever and the tail never read at all, which is a permanent blind spot
+    // reported as a clean session.
+    let start = store.scan_cursor(readable.len());
+    let mut cursor = start;
+
+    for offset in 0..readable.len() {
+        let index = (start + offset) % readable.len();
+        let pane = readable[index];
         if Instant::now() >= deadline {
             unread += 1;
             continue;
         }
+        cursor = (index + 1) % readable.len();
         let text = match client.read_pane(&pane.pane_id, config.lines) {
             Ok(text) => text,
             Err(err) => {
@@ -280,11 +306,12 @@ pub fn scan_cycle_with_panes(
         }
     }
 
+    store.set_scan_cursor(cursor);
+
     if unread > 0 {
         notes.push(format!(
-            "{unread} pane(s) were not read before this cycle's {:?} budget ran out; they will be \
-             read on the next cycle",
-            cycle_budget(config)
+            "{unread} pane(s) were not read before this cycle's {budget:?} budget ran out; the \
+             next cycle starts where this one stopped, so they are read then"
         ));
     }
     // Every read failing is a different thing from a few failing, and it is the

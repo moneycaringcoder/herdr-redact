@@ -82,6 +82,17 @@ pub struct Store {
     /// is a whole second on some filesystems, which is shorter than a scan
     /// interval and would lose writes.
     stamp: Cell<Option<u64>>,
+    /// Where the next cycle starts reading.
+    ///
+    /// A cycle has a time budget, and a session with thirty panes on a loaded
+    /// server can exhaust it partway through the list. Always starting at the
+    /// front would mean the same first handful of panes were read every cycle
+    /// and the tail was never read at all — a scanner with a permanent blind
+    /// spot, reporting a clean session for panes it has never looked at.
+    ///
+    /// Not persisted: a fresh process starting at the front is fine, and the
+    /// only thing the cursor buys is fairness within a long run.
+    scan_cursor: usize,
 }
 
 impl Store {
@@ -112,6 +123,7 @@ impl Store {
             seen_text: HashMap::new(),
             pending: Vec::new(),
             stamp: Cell::new(stamp),
+            scan_cursor: 0,
         };
         // A file written by a build with a larger cap must not stay over it.
         store.enforce_cap();
@@ -265,6 +277,21 @@ impl Store {
     /// Without this a daemon would hold a stale copy of the findings and its
     /// next save would silently undo an acknowledgement the user made from a
     /// shell. Returns whether anything was reloaded.
+    /// Index into this cycle's pane list at which reading should start. See
+    /// [`Store::scan_cursor`].
+    pub fn scan_cursor(&self, len: usize) -> usize {
+        if len == 0 {
+            0
+        } else {
+            self.scan_cursor % len
+        }
+    }
+
+    /// Records where the next cycle should pick up.
+    pub fn set_scan_cursor(&mut self, at: usize) {
+        self.scan_cursor = at;
+    }
+
     pub fn reload_if_changed(&mut self, config: &Config) -> bool {
         let stamp = fs::read(&self.path)
             .ok()
