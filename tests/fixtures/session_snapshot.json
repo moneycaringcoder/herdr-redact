@@ -1,0 +1,270 @@
+{
+  "type": "session_snapshot",
+  "snapshot": {
+    "version": "0.8.0",
+    "protocol": 19,
+    "focused_workspace_id": "wM",
+    "focused_tab_id": "wM:t1",
+    "focused_pane_id": "wM:p1",
+    "workspaces": [
+      {
+        "workspace_id": "wM",
+        "number": 1,
+        "label": "herdr takeover",
+        "focused": true,
+        "pane_count": 1,
+        "tab_count": 1,
+        "active_tab_id": "wM:t1",
+        "agent_status": "idle"
+      },
+      {
+        "workspace_id": "wE",
+        "number": 4,
+        "label": "media-throughput",
+        "focused": false,
+        "pane_count": 2,
+        "tab_count": 1,
+        "active_tab_id": "wE:t1",
+        "agent_status": "idle",
+        "worktree": {
+          "repo_key": "/home/dev/repos/crescendo/.git",
+          "repo_name": "crescendo",
+          "repo_root": "/home/dev/repos/crescendo",
+          "checkout_path": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+          "is_linked_worktree": true
+        }
+      },
+      {
+        "workspace_id": "w0",
+        "number": 6,
+        "label": "herdr-collide",
+        "focused": false,
+        "pane_count": 1,
+        "tab_count": 1,
+        "active_tab_id": "w0:t1",
+        "agent_status": "unknown",
+        "tokens": {
+          "git_clean": "\u2713"
+        },
+        "worktree": {
+          "repo_key": "/home/dev/repos/herdr-collide/.git",
+          "repo_name": "herdr-collide",
+          "repo_root": "/home/dev/repos/herdr-collide/.",
+          "checkout_path": "/home/dev/repos/herdr-collide/.",
+          "is_linked_worktree": false
+        }
+      }
+    ],
+    "tabs": [
+      {
+        "tab_id": "wM:t1",
+        "workspace_id": "wM",
+        "number": 1,
+        "label": "1",
+        "focused": true,
+        "pane_count": 1,
+        "agent_status": "idle"
+      },
+      {
+        "tab_id": "wE:t1",
+        "workspace_id": "wE",
+        "number": 1,
+        "label": "1",
+        "focused": false,
+        "pane_count": 2,
+        "agent_status": "idle"
+      },
+      {
+        "tab_id": "w0:t1",
+        "workspace_id": "w0",
+        "number": 1,
+        "label": "1",
+        "focused": false,
+        "pane_count": 1,
+        "agent_status": "unknown"
+      }
+    ],
+    "panes": [
+      {
+        "pane_id": "wM:p1",
+        "terminal_id": "term_659196a4d67231d",
+        "workspace_id": "wM",
+        "tab_id": "wM:t1",
+        "focused": true,
+        "cwd": "/home/dev/repos",
+        "foreground_cwd": "/home/dev/.local/share/mise/installs/node/24.18.0/lib/node_modules/pyright/dist",
+        "agent": "claude",
+        "terminal_title": "a task title",
+        "terminal_title_stripped": "a task title",
+        "agent_status": "idle",
+        "tokens": {
+          "context": "\u26c1 49% (488k)",
+          "provider": "claude",
+          "limit": "5h 100%",
+          "title": "herdr takeover"
+        },
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-0000-0000-000000000000"
+        },
+        "scroll": {
+          "offset_from_bottom": 0,
+          "max_offset_from_bottom": 0,
+          "viewport_rows": 53
+        },
+        "revision": 1545
+      },
+      {
+        "pane_id": "wE:p1",
+        "terminal_id": "term_659126a97d066f",
+        "workspace_id": "wE",
+        "tab_id": "wE:t1",
+        "focused": false,
+        "cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "foreground_cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "agent": "opencode",
+        "terminal_title": "a task title",
+        "terminal_title_stripped": "a task title",
+        "agent_status": "idle",
+        "tokens": {
+          "provider": "opencode",
+          "title": "media-throughput"
+        },
+        "scroll": {
+          "offset_from_bottom": 0,
+          "max_offset_from_bottom": 0,
+          "viewport_rows": 19
+        },
+        "revision": 6
+      },
+      {
+        "pane_id": "wE:p2",
+        "terminal_id": "term_65912a487007b13",
+        "workspace_id": "wE",
+        "tab_id": "wE:t1",
+        "focused": false,
+        "cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "foreground_cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "agent": "claude",
+        "terminal_title": "a task title",
+        "terminal_title_stripped": "a task title",
+        "agent_status": "idle",
+        "tokens": {
+          "limit": "5h 100%",
+          "context": "\u26c1 50% (100k)",
+          "title": "media-throughput",
+          "provider": "claude"
+        },
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-0000-0000-000000000000"
+        },
+        "scroll": {
+          "offset_from_bottom": 0,
+          "max_offset_from_bottom": 0,
+          "viewport_rows": 30
+        },
+        "revision": 195
+      },
+      {
+        "pane_id": "w0:p1",
+        "terminal_id": "term_6591c61efdb412c",
+        "workspace_id": "w0",
+        "tab_id": "w0:t1",
+        "focused": false,
+        "cwd": "/home/dev/repos/herdr-collide",
+        "foreground_cwd": "/home/dev/repos/herdr-collide",
+        "agent_status": "unknown",
+        "scroll": {
+          "offset_from_bottom": 0,
+          "max_offset_from_bottom": 0,
+          "viewport_rows": 53
+        },
+        "revision": 0
+      }
+    ],
+    "layouts": [],
+    "agents": [
+      {
+        "terminal_id": "term_659196a4d67231d",
+        "agent": "claude",
+        "terminal_title": "a task title",
+        "terminal_title_stripped": "a task title",
+        "agent_status": "idle",
+        "tokens": {
+          "limit": "5h 100%",
+          "provider": "claude",
+          "title": "herdr takeover",
+          "context": "\u26c1 49% (488k)"
+        },
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-0000-0000-000000000000"
+        },
+        "workspace_id": "wM",
+        "tab_id": "wM:t1",
+        "pane_id": "wM:p1",
+        "focused": true,
+        "state_change_seq": 764,
+        "cwd": "/home/dev/repos",
+        "foreground_cwd": "/home/dev/.local/share/mise/installs/node/24.18.0/lib/node_modules/pyright/dist",
+        "revision": 1545
+      },
+      {
+        "terminal_id": "term_659126a97d066f",
+        "name": "media-throughput",
+        "agent": "opencode",
+        "terminal_title": "a task title",
+        "terminal_title_stripped": "a task title",
+        "agent_status": "idle",
+        "tokens": {
+          "title": "media-throughput",
+          "provider": "opencode"
+        },
+        "workspace_id": "wE",
+        "tab_id": "wE:t1",
+        "pane_id": "wE:p1",
+        "focused": false,
+        "state_change_seq": 549,
+        "cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "foreground_cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "revision": 6
+      },
+      {
+        "terminal_id": "term_65912a487007b13",
+        "name": "rev-media",
+        "agent": "claude",
+        "terminal_title": "a task title",
+        "terminal_title_stripped": "a task title",
+        "agent_status": "idle",
+        "tokens": {
+          "limit": "5h 100%",
+          "context": "\u26c1 50% (100k)",
+          "title": "media-throughput",
+          "provider": "claude"
+        },
+        "agent_session": {
+          "source": "herdr:claude",
+          "agent": "claude",
+          "kind": "id",
+          "value": "00000000-0000-0000-0000-000000000000"
+        },
+        "workspace_id": "wE",
+        "tab_id": "wE:t1",
+        "pane_id": "wE:p2",
+        "focused": false,
+        "interactive_ready": true,
+        "state_change_seq": 513,
+        "cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "foreground_cwd": "/home/dev/.herdr/worktrees/crescendo/fix-media-fetch-throughput",
+        "revision": 195
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "type": "pane_read",
+  "read": {
+    "pane_id": "wE:p2",
+    "workspace_id": "wE",
+    "tab_id": "wE:t1",
+    "source": "recent_unwrapped",
+    "format": "text",
+    "text": "$ cargo build --release\n   Compiling redact v0.1.0\n    Finished `release` profile [optimized] target(s) in 9.42s\n$ \n",
+    "revision": 0,
+    "truncated": false
+  }
+}

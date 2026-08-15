@@ -1,0 +1,104 @@
+# herdr plugin: redact
+#
+# Watches agent pane output for credentials and tells you before you screenshot,
+# stream, or paste them. Nothing is ever written back to a pane, and no secret is
+# ever written anywhere.
+#
+# Install:   herdr plugin install moneycaringcoder/herdr-redact
+# Local dev: herdr plugin link /path/to/herdr-redact   (does NOT run [[build]])
+# Remove:    herdr plugin unlink moneycaringcoder.redact
+# Logs:      herdr plugin log list --plugin moneycaringcoder.redact
+
+id = "moneycaringcoder.redact"
+name = "Redact"
+version = "0.1.0"
+# Oldest herdr with every API this plugin calls: the `tokens` metadata API on
+# workspace.report_metadata and pane.report_metadata, which landed in 0.7.5.
+# Developed and verified against 0.8.0 / protocol 19.
+min_herdr_version = "0.7.5"
+description = "Warns when an agent pane has printed a credential."
+platforms = ["linux", "macos"]
+
+# Commands are argv arrays run with no shell and a minimal PATH, with the plugin
+# root as cwd. Compiled once at install time; the resulting binary is what every
+# command below invokes.
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+# Restart recovery. herdr runs startup hooks on a fresh server start AND on a
+# live handoff (`herdr update --handoff`), so this fires whenever herdr comes
+# back. --restore re-spawns the watcher only if it was enabled when herdr went
+# away, and is a silent no-op otherwise.
+#
+# Scanning is opt-in: a fresh install starts nothing until the user enables it.
+[[startup]]
+command = ["./target/release/redact", "--restore"]
+
+# Live findings view: what was found, in which pane, masked. `a` acknowledges the
+# selected finding, `A` acknowledges all.
+[[panes]]
+id = "findings"
+title = "Redact: findings"
+placement = "overlay"
+command = ["./target/release/redact", "--watch"]
+
+[[actions]]
+id = "scan"
+title = "Redact: scan now"
+description = "One-shot scan of every agent pane."
+contexts = ["global", "workspace"]
+command = ["./target/release/redact", "--once"]
+
+[[actions]]
+id = "json"
+title = "Redact: JSON snapshot"
+description = "Machine-readable findings for scripting. Contains no secret values."
+contexts = ["global", "workspace"]
+command = ["./target/release/redact", "--json"]
+
+[[actions]]
+id = "rules"
+title = "Redact: list detection rules"
+description = "The rules that are actually active, built-in and user-supplied."
+contexts = ["global"]
+command = ["./target/release/redact", "--rules"]
+
+[[actions]]
+id = "ack-all"
+title = "Redact: acknowledge all findings"
+description = "Clear every current warning. The secrets are still in scrollback."
+contexts = ["global"]
+command = ["./target/release/redact", "--ack-all"]
+
+[[actions]]
+id = "setup"
+title = "Redact: set up sidebar (start here)"
+description = "Add redact's tokens to herdr's config.toml, back it up, and reload."
+contexts = ["global"]
+command = ["./target/release/redact", "--setup"]
+
+[[actions]]
+id = "setup-rollback"
+title = "Redact: undo sidebar setup"
+description = "Restore the config.toml backup taken by setup."
+contexts = ["global"]
+command = ["./target/release/redact", "--setup-rollback"]
+
+[[actions]]
+id = "watch-toggle"
+title = "Redact: toggle pane watcher"
+description = "Start or stop background scanning. Scanning is opt-in."
+contexts = ["global"]
+command = ["./target/release/redact", "--toggle"]
+
+[[actions]]
+id = "watch-enable"
+title = "Redact: enable pane watcher"
+contexts = ["global"]
+command = ["./target/release/redact", "--enable"]
+
+[[actions]]
+id = "watch-disable"
+title = "Redact: disable pane watcher"
+contexts = ["global"]
+command = ["./target/release/redact", "--disable"]
