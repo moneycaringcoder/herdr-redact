@@ -1,45 +1,271 @@
 //! Watcher lifecycle: detached daemon, pid/enabled markers, the scan cycle, TTL
-//! badge pushes, and cleanup that survives being killed.
-//!
-//! STUB — owned by the `surface` builder. The signatures below are the contract
-//! the rest of the crate compiles against; the bodies are placeholders. See
-//! docs/herdr-protocol.md for the lifecycle contract these verbs implement, and
-//! adapt `~/repos/herdr-collide/src/daemon.rs`, which implements it correctly.
+//! badge pushes, and cleanup that survives being killed. See
+//! docs/herdr-protocol.md for the lifecycle contract these verbs implement.
 
-use crate::config::Config;
+use std::collections::HashMap;
+use std::fs;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::config::{self, Config};
 use crate::findings::Store;
-use crate::herdr::Herdr;
-use crate::model::Report;
-use crate::Result;
+use crate::herdr::{self, Herdr};
+use crate::model::{Alert, PaneRef, Report};
+use crate::scan::{self, Rules};
+use crate::{render, Result};
 
-pub fn enable(_args: &[String]) -> Result<()> {
-    Ok(())
+/// The stop request only posts a signal; the daemon still has to clear its
+/// badges. Bounded so `--disable` can never hang on a wedged daemon.
+const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const STOP_POLL: Duration = Duration::from_millis(25);
+
+/// The main loop wakes at least this often so a stop request is noticed
+/// promptly even with a long scan interval.
+const LOOP_TICK: Duration = Duration::from_millis(250);
+
+/// Valued arguments the detached child is given a copy of. It re-reads the
+/// config file but never sees the user's command line, so `redact --enable
+/// --lines 2000` would otherwise run at the config file's budget.
+const FORWARDED_VALUES: [&str; 2] = ["--interval", "--lines"];
+
+/// Flags forwarded as-is, with no value of their own.
+const FORWARDED_FLAGS: [&str; 1] = ["--all-panes"];
+
+pub fn enable(args: &[String]) -> Result<()> {
+    // Parse before touching any state: a typo'd value must fail here, where the
+    // user can see it, and not inside a detached child whose stderr is
+    // /dev/null.
+    let forwarded = forwarded_args(args)?;
+    config::load_with_args(args)?;
+
+    // Mark next. If the spawn fails, or the server hands off before we finish,
+    // `--restore` still knows the user wants a daemon.
+    mark_enabled(true);
+    if live_pid().is_some() {
+        return Ok(());
+    }
+    spawn_detached(&forwarded)
 }
 
 pub fn disable() -> Result<()> {
-    Ok(())
+    // Mark first, so nothing that observes the markers mid-teardown concludes
+    // the daemon is still wanted.
+    mark_enabled(false);
+
+    if let Some(pid) = live_pid() {
+        request_stop(pid);
+        // Load-bearing: the stop request only posts, and the pid file lives
+        // until the daemon has finished clearing. An `--enable` landing in that
+        // window would see a live pid, spawn nothing, and the badge would never
+        // come back.
+        if !await_exit(pid, STOP_TIMEOUT) {
+            eprintln!("redact: watcher {pid} did not exit within {STOP_TIMEOUT:?}");
+        }
+    }
+    clear_pid_file();
+
+    // Fresh connection, and every current pane and workspace: the daemon may
+    // have died without clearing, and it only ever tracked what it had lit.
+    let mut client = Herdr::connect()?;
+    sweep(&mut client)
 }
 
-pub fn toggle(_args: &[String]) -> Result<()> {
-    Ok(())
+pub fn toggle(args: &[String]) -> Result<()> {
+    if live_pid().is_some() {
+        disable()
+    } else {
+        enable(args)
+    }
 }
 
 /// herdr startup hook. Silent no-op unless the enabled marker is set and no
 /// daemon is currently live.
 pub fn restore() -> Result<()> {
-    Ok(())
+    if !is_enabled() || live_pid().is_some() {
+        return Ok(());
+    }
+    // A startup hook has no user command line to forward; the child falls back
+    // to the config file, which is the only durable record of the user's
+    // choices anyway.
+    spawn_detached(&[])
 }
 
 /// The scan loop itself, running in the foreground.
-pub fn run(_config: &Config) -> Result<()> {
-    Ok(())
+pub fn run(config: &Config) -> Result<()> {
+    write_pid(std::process::id());
+
+    // Which token name is currently lit per target. A severity flip has to
+    // clear the old name before setting the new one, or herdr renders two
+    // badges at once — the merge patch only touches names we mention.
+    let active = Arc::new(Mutex::new(ActiveBadges::default()));
+    let stopping = Arc::new(AtomicBool::new(false));
+    spawn_signal_thread(Arc::clone(&active), Arc::clone(&stopping))?;
+
+    let mut store = Store::load(config);
+    let mut client: Option<Herdr> = None;
+    // Notes repeat every cycle for as long as their cause lasts, so only the
+    // ones that are new since the last cycle are worth printing.
+    let mut reported_notes: Vec<String> = Vec::new();
+
+    loop {
+        if stopping.load(Ordering::SeqCst) {
+            // The signal thread owns shutdown from here: it clears state over
+            // its own connection and exits the process. Park rather than
+            // return, so this thread can never push a badge back on top of the
+            // clear it is racing.
+            loop {
+                std::thread::park();
+            }
+        }
+
+        if client.is_none() {
+            match Herdr::connect() {
+                Ok(connected) => client = Some(connected),
+                Err(err) => eprintln!("redact: cannot reach herdr: {err}"),
+            }
+        }
+        if let Some(connected) = client.as_mut() {
+            // Picks up an acknowledgement made from a shell since the last
+            // cycle, so this run's save cannot undo it.
+            store.reload_if_changed(config);
+
+            match scan_cycle_with_panes(connected, config, &mut store) {
+                Ok((report, panes)) => {
+                    for note in new_notes(&reported_notes, &report.notes) {
+                        eprintln!("redact: {note}");
+                    }
+                    reported_notes.clone_from(&report.notes);
+
+                    notify_new(connected, config, &mut store);
+                    push(connected, config, &report, &panes, &active);
+
+                    if let Err(err) = store.save() {
+                        eprintln!("redact: could not save findings: {err}");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("redact: scan failed: {err}");
+                    // Only a transport failure is worth redialling for; an error
+                    // envelope means the server is fine and answered us.
+                    if herdr::error_code(&*err).is_none() {
+                        client = None;
+                    }
+                }
+            }
+        }
+
+        nap(config.interval, &stopping);
+    }
 }
+
+// ---------------------------------------------------------------------------
+// The scan cycle
+// ---------------------------------------------------------------------------
 
 /// One full cycle over an existing client: snapshot, read each pane, scan, fold
 /// into the store. Shared by the daemon and by the one-shot verbs, so they can
 /// never disagree about what a scan is.
-pub fn scan_cycle(_client: &mut Herdr, _config: &Config, _store: &mut Store) -> Result<Report> {
-    Ok(Report::default())
+pub fn scan_cycle(client: &mut Herdr, config: &Config, store: &mut Store) -> Result<Report> {
+    Ok(scan_cycle_with_panes(client, config, store)?.0)
+}
+
+/// [`scan_cycle`], also handing back the panes the snapshot reported.
+///
+/// The daemon needs them to plan badges, and taking a second snapshot for that
+/// would be a round trip per cycle spent asking a question we just asked.
+pub fn scan_cycle_with_panes(
+    client: &mut Herdr,
+    config: &Config,
+    store: &mut Store,
+) -> Result<(Report, Vec<PaneRef>)> {
+    let panes = client.panes()?;
+    let now = crate::model::now();
+    let mut notes = Vec::new();
+
+    // A rule the user typed that will not compile is fatal for `--rules` and
+    // `--once`, where they are looking right at it. Here it must not be: a
+    // scanner that stops scanning because of one bad regex protects nothing.
+    let rules = match Rules::compile(config) {
+        Ok(rules) => rules,
+        Err(err) => {
+            notes.push(format!(
+                "a configured pattern did not compile ({err}); scanning with the built-in rules \
+                 only — the rules you added are NOT active"
+            ));
+            Rules::builtin()
+        }
+    };
+
+    // A findings pane that scans itself reports its own masked previews for
+    // ever, and every one of them looks like a real finding.
+    let own_pane = config::non_empty_env("HERDR_PANE_ID");
+
+    let mut scanned = 0usize;
+    let mut skipped = 0usize;
+    let mut truncated = 0usize;
+
+    for pane in &panes {
+        if !should_scan(pane, config, own_pane.as_deref()) {
+            skipped += 1;
+            continue;
+        }
+        let text = match client.read_pane(&pane.pane_id, config.lines) {
+            Ok(text) => text,
+            Err(err) => {
+                // An error envelope means the server is healthy and told us
+                // something: a pane that closed under us is data, not a
+                // failure. A transport failure means we are blind, and that has
+                // to propagate rather than render as a clean session.
+                match herdr::error_code(&*err) {
+                    Some("pane_not_found") => {
+                        skipped += 1;
+                        notes.push(format!(
+                            "pane {} closed while it was being read",
+                            pane.pane_id
+                        ));
+                    }
+                    Some(_) => {
+                        skipped += 1;
+                        notes.push(format!("pane {} could not be read: {err}", pane.pane_id));
+                    }
+                    None => return Err(err),
+                }
+                continue;
+            }
+        };
+
+        scanned += 1;
+        if text.truncated {
+            truncated += 1;
+            notes.push(format!(
+                "pane {} had more output than the {}-line budget; anything above it was not \
+                 scanned",
+                pane.pane_id, config.lines
+            ));
+        }
+
+        // Trap 3: `PaneReadResult.revision` is always zero on the wire, so
+        // change detection has to come from the text. A cache hit skips the
+        // scan and nothing else — the pane's existing findings stay exactly
+        // where they are.
+        if store.pane_text_changed(&pane.pane_id, &text.text) {
+            let matches = scan::scan(&text.text, &rules, store.key());
+            store.observe(pane, &matches, now);
+        }
+    }
+
+    let live: Vec<String> = panes.iter().map(|pane| pane.pane_id.clone()).collect();
+    store.prune_to(&live);
+
+    let mut report = store.report(notes);
+    report.panes_scanned = scanned;
+    report.panes_skipped = skipped;
+    report.panes_truncated = truncated;
+    Ok((report, panes))
 }
 
 /// One cycle over a fresh connection, for `--once` and `--json`.
@@ -51,10 +277,603 @@ pub fn scan_once(config: &Config) -> Result<Report> {
     Ok(report)
 }
 
+/// Whether this pane's output should be read at all.
+///
+/// Pure, so the filter that decides what this plugin is allowed to look at can
+/// be read and tested in one place rather than inferred from a loop.
+pub fn should_scan(pane: &PaneRef, config: &Config, own_pane: Option<&str>) -> bool {
+    if Some(pane.pane_id.as_str()) == own_pane {
+        return false;
+    }
+    if config.ignore_panes.iter().any(|id| id == &pane.pane_id) {
+        return false;
+    }
+    config.scan_all_panes || pane.agent.is_some()
+}
+
+/// Notes that were not already reported on the previous cycle. A note repeats
+/// for as long as its cause lasts — a truncated pane produces one every few
+/// seconds — so only the new ones are worth printing.
+pub fn new_notes(previous: &[String], current: &[String]) -> Vec<String> {
+    current
+        .iter()
+        .filter(|note| !previous.contains(note))
+        .cloned()
+        .collect()
+}
+
+/// Toasts findings seen for the first time, at most one per pattern per pane
+/// per daemon run.
+///
+/// The queue is drained whether or not notifications are on, so turning them
+/// off does not build a backlog that fires the moment they are turned back on.
+fn notify_new(client: &mut Herdr, config: &Config, store: &mut Store) {
+    let fresh = store.take_new_findings();
+    if !config.notify {
+        return;
+    }
+    for finding in fresh {
+        if !store.claim_notification(&finding) {
+            continue;
+        }
+        // A toast body is the single easiest place to leak a credential, so
+        // this line is deliberate: the rule, the pane, the masked preview and
+        // the length. `Finding` has no field that could carry the value.
+        let title = format!("redact: {} in {}", finding.label, finding.pane_label);
+        let body = format!(
+            "{} in {}: {} ({} chars). Dismiss with `redact --ack {}`.",
+            finding.pattern,
+            finding.pane_label,
+            finding.preview,
+            finding.value_len,
+            finding.short_id()
+        );
+        if let Err(err) = client.notify(&title, &body) {
+            eprintln!("redact: notification failed: {err}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Badges
+// ---------------------------------------------------------------------------
+
+/// Which token name this plugin currently has lit, per target.
+///
+/// Two maps rather than one because a pane id and a workspace id are different
+/// namespaces, and clearing the wrong one leaves a badge nobody can explain.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActiveBadges {
+    pub panes: HashMap<String, String>,
+    pub workspaces: HashMap<String, String>,
+}
+
+/// One badge call to make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BadgeOp {
+    ClearPane {
+        pane_id: String,
+        token: String,
+    },
+    SetPane {
+        pane_id: String,
+        token: &'static str,
+        text: String,
+    },
+    ClearWorkspace {
+        workspace_id: String,
+        token: String,
+    },
+    SetWorkspace {
+        workspace_id: String,
+        token: &'static str,
+        text: String,
+    },
+}
+
+/// Turns "what is lit now" plus "what this cycle found" into the calls that
+/// close the gap. Pure, so the ordering rules below are testable without a
+/// socket:
+///
+/// * A severity flip clears the old token name *before* setting the new one.
+///   Tokens are a merge patch, so an unmentioned name stays lit and herdr would
+///   render two badges for one target.
+/// * `render::badge` is the single author of badge text, and it renders a clear
+///   target as the empty string. An empty value is a clear, never a draw:
+///   setting it would occupy the row with nothing.
+/// * A target that dropped out of the report — pane closed, finding
+///   acknowledged — is cleared rather than left to expire.
+/// * Both the pane and its workspace are badged. An agent panel can be
+///   collapsed, and a badge nobody can see protects nobody.
+pub fn badge_plan(active: &ActiveBadges, report: &Report, panes: &[PaneRef]) -> Vec<BadgeOp> {
+    badge_plan_with(active, report, panes, render::badge)
+}
+
+/// [`badge_plan`] with the badge text supplied by the caller.
+///
+/// Exists so the ordering rules can be tested against the text contract rather
+/// than against whatever `render::badge` happens to produce today.
+pub fn badge_plan_with(
+    active: &ActiveBadges,
+    report: &Report,
+    panes: &[PaneRef],
+    text_of: impl Fn(Alert, usize) -> String,
+) -> Vec<BadgeOp> {
+    let mut ops = Vec::new();
+
+    let mut pane_ids: Vec<&str> = panes.iter().map(|pane| pane.pane_id.as_str()).collect();
+    pane_ids.sort_unstable();
+    pane_ids.dedup();
+
+    let mut workspace_ids: Vec<&str> = panes.iter().map(|p| p.workspace_id.as_str()).collect();
+    workspace_ids.sort_unstable();
+    workspace_ids.dedup();
+
+    plan_target(
+        &active.panes,
+        &pane_ids,
+        |id| report.alert_for_pane(id),
+        &text_of,
+        |pane_id, token| BadgeOp::ClearPane {
+            pane_id: pane_id.to_string(),
+            token: token.to_string(),
+        },
+        |pane_id, token, text| BadgeOp::SetPane {
+            pane_id: pane_id.to_string(),
+            token,
+            text,
+        },
+        &mut ops,
+    );
+    plan_target(
+        &active.workspaces,
+        &workspace_ids,
+        |id| report.alert_for_workspace(id),
+        &text_of,
+        |workspace_id, token| BadgeOp::ClearWorkspace {
+            workspace_id: workspace_id.to_string(),
+            token: token.to_string(),
+        },
+        |workspace_id, token, text| BadgeOp::SetWorkspace {
+            workspace_id: workspace_id.to_string(),
+            token,
+            text,
+        },
+        &mut ops,
+    );
+
+    ops
+}
+
+/// The plan for one kind of target. Both kinds follow identical rules, and one
+/// implementation is how they stay identical.
+fn plan_target(
+    active: &HashMap<String, String>,
+    ids: &[&str],
+    alert_of: impl Fn(&str) -> (Alert, usize),
+    text_of: &impl Fn(Alert, usize) -> String,
+    clear: impl Fn(&str, &str) -> BadgeOp,
+    set: impl Fn(&str, &'static str, String) -> BadgeOp,
+    ops: &mut Vec<BadgeOp>,
+) {
+    let mut wanted: Vec<&str> = Vec::new();
+
+    for id in ids {
+        let (alert, count) = alert_of(id);
+        let text = text_of(alert, count);
+        let next = if text.is_empty() {
+            None
+        } else {
+            Some(alert.token_name())
+        };
+        let previous = active.get(*id).map(String::as_str);
+
+        if let Some(previous) = previous {
+            if Some(previous) != next {
+                ops.push(clear(id, previous));
+            }
+        }
+        if let Some(token) = next {
+            wanted.push(id);
+            // Re-sent every cycle even when unchanged: the TTL is what makes
+            // the badge self-heal, and it only refreshes on a write.
+            ops.push(set(id, token, text));
+        }
+    }
+
+    // Targets we lit that this cycle has nothing to say about — a pane that
+    // closed, a finding that was acknowledged — are cleared rather than left to
+    // expire. A HashMap iterates arbitrarily, so the leftovers are sorted to
+    // keep the plan reproducible for both tests and logs.
+    let mut stale: Vec<(&String, &String)> = active
+        .iter()
+        .filter(|(id, _)| !wanted.contains(&id.as_str()))
+        // Anything in `ids` was already handled above, including its clear.
+        .filter(|(id, _)| !ids.contains(&id.as_str()))
+        .collect();
+    stale.sort();
+    for (id, token) in stale {
+        ops.push(clear(id, token));
+    }
+}
+
+/// Executes a badge plan. Errors are reported per call and the cycle continues:
+/// a swallowed push failure renders as a blank badge with nothing to debug, and
+/// one bad pane must not cost every other one its badge.
+fn push(
+    client: &mut Herdr,
+    config: &Config,
+    report: &Report,
+    panes: &[PaneRef],
+    active: &Mutex<ActiveBadges>,
+) {
+    let ttl_ms = config.ttl_ms();
+    let plan = badge_plan(&lock(active).clone(), report, panes);
+    let mut lit = ActiveBadges::default();
+
+    for op in plan {
+        match op {
+            // A failed clear is forgotten rather than retried next cycle: the
+            // TTL expires it within three cycles anyway, and retrying forever
+            // would hammer a target that no longer exists.
+            BadgeOp::ClearPane { pane_id, token } => {
+                cleared(client.clear_pane_badge(&pane_id, &token), &pane_id, &token);
+            }
+            BadgeOp::ClearWorkspace {
+                workspace_id,
+                token,
+            } => {
+                cleared(
+                    client.clear_workspace_badge(&workspace_id, &token),
+                    &workspace_id,
+                    &token,
+                );
+            }
+            BadgeOp::SetPane {
+                pane_id,
+                token,
+                text,
+            } => {
+                if was_set(
+                    client.set_pane_badge(&pane_id, token, &text, ttl_ms),
+                    &pane_id,
+                    token,
+                ) {
+                    lit.panes.insert(pane_id, token.to_string());
+                }
+            }
+            BadgeOp::SetWorkspace {
+                workspace_id,
+                token,
+                text,
+            } => {
+                if was_set(
+                    client.set_workspace_badge(&workspace_id, token, &text, ttl_ms),
+                    &workspace_id,
+                    token,
+                ) {
+                    lit.workspaces.insert(workspace_id, token.to_string());
+                }
+            }
+        }
+    }
+
+    *lock(active) = lit;
+}
+
+/// Whether a target is definitely not lit after a clear. A target that closed
+/// under us has nothing lit on it either, and is expected churn rather than
+/// something to shout about.
+fn cleared(result: Result<()>, target: &str, token: &str) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(err) => {
+            let gone = target_is_gone(&*err);
+            if !gone {
+                eprintln!("redact: clearing {token} on {target} failed: {err}");
+            }
+            gone
+        }
+    }
+}
+
+/// Whether a badge is now lit. A failed set is logged and not recorded, so the
+/// next cycle tries again rather than believing in a badge that is not there.
+fn was_set(result: Result<()>, target: &str, token: &str) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(err) => {
+            if !target_is_gone(&*err) {
+                eprintln!("redact: setting {token} on {target} failed: {err}");
+            }
+            false
+        }
+    }
+}
+
+fn target_is_gone(err: &(dyn std::error::Error + 'static)) -> bool {
+    matches!(
+        herdr::error_code(err),
+        Some("pane_not_found") | Some("workspace_not_found")
+    )
+}
+
+/// Clears every token this plugin owns on every current pane and workspace.
+///
+/// Total rather than tracked: the daemon may have died without clearing, and it
+/// only ever knew about the targets it had lit itself. Clearing a name that was
+/// never set costs one round trip and cannot go stale.
+fn sweep(client: &mut Herdr) -> Result<()> {
+    let panes = client.panes()?;
+    let mut workspaces: Vec<&str> = panes.iter().map(|p| p.workspace_id.as_str()).collect();
+    workspaces.sort_unstable();
+    workspaces.dedup();
+
+    let mut failures = 0usize;
+    for pane in &panes {
+        for token in Alert::ALL_TOKENS {
+            if !cleared(
+                client.clear_pane_badge(&pane.pane_id, token),
+                &pane.pane_id,
+                token,
+            ) {
+                failures += 1;
+            }
+        }
+    }
+    for workspace_id in workspaces {
+        for token in Alert::ALL_TOKENS {
+            if !cleared(
+                client.clear_workspace_badge(workspace_id, token),
+                workspace_id,
+                token,
+            ) {
+                failures += 1;
+            }
+        }
+    }
+    if failures > 0 {
+        return Err(format!("{failures} badge clears failed; see the messages above").into());
+    }
+    Ok(())
+}
+
+fn spawn_signal_thread(active: Arc<Mutex<ActiveBadges>>, stopping: Arc<AtomicBool>) -> Result<()> {
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+    ])?;
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            stopping.store(true, Ordering::SeqCst);
+            shutdown(&active);
+            std::process::exit(0);
+        }
+    });
+    Ok(())
+}
+
+/// Clears everything this daemon lit, over its **own** connection so it never
+/// waits on the main loop's sleep or its in-flight round trip.
+fn shutdown(active: &Mutex<ActiveBadges>) {
+    let tracked = lock(active).clone();
+    match Herdr::connect() {
+        Ok(mut client) => {
+            for (pane_id, token) in &tracked.panes {
+                cleared(client.clear_pane_badge(pane_id, token), pane_id, token);
+            }
+            for (workspace_id, token) in &tracked.workspaces {
+                cleared(
+                    client.clear_workspace_badge(workspace_id, token),
+                    workspace_id,
+                    token,
+                );
+            }
+        }
+        // Not silent: without this line a killed daemon looks like it cleaned
+        // up, and the badge lingers until its TTL expires.
+        Err(err) => eprintln!("redact: shutdown could not reach herdr: {err}"),
+    }
+    clear_pid_file();
+}
+
+/// Sleeps in slices so a stop request is noticed without waiting out a whole
+/// scan interval.
+fn nap(interval: Duration, stopping: &AtomicBool) {
+    let deadline = Instant::now() + interval;
+    while Instant::now() < deadline {
+        if stopping.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(LOOP_TICK.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    // A panicking push must not take the badge state down with it; the data is
+    // a plain map and stays consistent.
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// ---------------------------------------------------------------------------
+// Process control
+// ---------------------------------------------------------------------------
+
+/// The arguments worth handing to the detached child, normalised to the
+/// `--name value` spelling. Anything else on the command line (the verb itself,
+/// flags the daemon does not read) is dropped.
+pub fn forwarded_args(args: &[String]) -> Result<Vec<String>> {
+    let mut forwarded = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if FORWARDED_FLAGS.contains(&arg.as_str()) {
+            forwarded.push(arg.clone());
+            continue;
+        }
+        let Some(name) = FORWARDED_VALUES.into_iter().find(|name| {
+            arg == name
+                || arg
+                    .strip_prefix(*name)
+                    .is_some_and(|tail| tail.starts_with('='))
+        }) else {
+            continue;
+        };
+        let value = match arg.split_once('=') {
+            Some((_, value)) => value.to_string(),
+            None => rest.next().ok_or(format!("{name} needs a value"))?.clone(),
+        };
+        forwarded.push(name.to_string());
+        forwarded.push(value);
+    }
+    Ok(forwarded)
+}
+
+fn spawn_detached(forwarded: &[String]) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut command = Command::new(exe);
+    command
+        .arg("--daemon")
+        .args(forwarded)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // A daemon herdr spawned as a child dies with herdr. `setsid` puts it in
+    // its own session so it survives; a double fork is not needed, and the
+    // extra process would only make the pid we record harder to track.
+    unsafe {
+        command.pre_exec(|| {
+            // EPERM here just means we are already a session leader.
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    write_pid(child.id());
+    Ok(())
+}
+
+fn request_stop(pid: i32) {
+    // SIGTERM, not SIGKILL: the daemon's handler is what clears the badges.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
+
+fn await_exit(pid: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !is_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(STOP_POLL);
+    }
+    !is_alive(pid)
+}
+
+fn is_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    // Signal 0 checks for existence without delivering anything. EPERM means
+    // the process exists but belongs to someone else.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Guards against pid reuse. The state dir outlives reboots, so a recorded pid
+/// can easily belong to something else entirely by the time we read it.
+#[cfg(target_os = "linux")]
+fn same_program(pid: i32) -> bool {
+    let ours = fs::read_to_string("/proc/self/comm");
+    let theirs = fs::read_to_string(format!("/proc/{pid}/comm"));
+    match (ours, theirs) {
+        (Ok(ours), Ok(theirs)) => ours.trim() == theirs.trim(),
+        // /proc unreadable (hidepid, a stripped container): fall back to
+        // trusting the liveness probe rather than killing a live daemon's
+        // marker.
+        _ => true,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn same_program(_pid: i32) -> bool {
+    // No portable equivalent of /proc/<pid>/comm; liveness is all we have.
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Markers
+// ---------------------------------------------------------------------------
+
+/// The pid of a daemon that is live *right now*, or `None`. A stale or reused
+/// pid file is swept as a side effect so the next verb starts from a clean
+/// state.
 pub fn live_pid() -> Option<i32> {
+    let recorded = read_pid()?;
+    if is_alive(recorded) && same_program(recorded) {
+        return Some(recorded);
+    }
+    clear_pid_file();
     None
 }
 
+pub fn read_pid() -> Option<i32> {
+    fs::read_to_string(config::pid_file())
+        .ok()?
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|pid| *pid > 0)
+}
+
+pub fn write_pid(pid: u32) {
+    // Best effort: an unwritable state dir must not fail the user's action,
+    // but it must not be silent either — without the marker, `--enable` will
+    // happily start a second daemon.
+    let path = config::pid_file();
+    if let Err(err) = write_marker(&path, &pid.to_string()) {
+        eprintln!("redact: could not record pid in {}: {err}", path.display());
+    }
+}
+
+/// Removes the pid file, but only if it still names this process or a dead one,
+/// so a successor daemon's marker is never deleted.
+pub fn clear_pid_file() {
+    match read_pid() {
+        Some(pid) if pid != std::process::id() as i32 && is_alive(pid) && same_program(pid) => {}
+        _ => {
+            let _ = fs::remove_file(config::pid_file());
+        }
+    }
+}
+
+/// Did the user ever ask for a daemon? Consulted by `--restore`.
 pub fn is_enabled() -> bool {
-    false
+    config::enabled_flag().exists()
+}
+
+pub fn mark_enabled(enabled: bool) {
+    let path = config::enabled_flag();
+    let outcome = if enabled {
+        write_marker(&path, "1")
+    } else {
+        match fs::remove_file(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    };
+    if let Err(err) = outcome {
+        eprintln!("redact: could not update {}: {err}", path.display());
+    }
+}
+
+fn write_marker(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)
 }

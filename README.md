@@ -1,0 +1,465 @@
+<div align="center">
+
+<img src="docs/img/logo.svg" alt="" width="96" height="96">
+
+# redact
+
+**Warns you when an agent pane has printed a credential — before you screenshot it, stream it, or
+paste it into a chat window.**
+
+[![CI](https://github.com/moneycaringcoder/herdr-redact/actions/workflows/ci.yml/badge.svg)](https://github.com/moneycaringcoder/herdr-redact/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.7.5-8b949e.svg)](https://herdr.dev)
+[![no network](https://img.shields.io/badge/network%20calls-none-2da44e.svg)](#what-this-does-not-do)
+
+</div>
+
+## Read this first: what it reads, and what it never writes
+
+**This plugin reads the terminal output of your panes.** That is the whole mechanism, and there is no
+version of it that does not. Say that out loud before you install it, because it is the same output
+your agents print keys, tokens and connection strings into.
+
+Everything else about it is built to make that safe:
+
+- **Scanning is opt-in.** A fresh install starts nothing. No pane is read until you enable the
+  watcher, and disabling it stops the reading and clears every badge it set.
+- **No secret is ever written anywhere.** Not to a log, not to the state file, not into a toast, not
+  into the JSON output, not into a badge. A finding records the rule that fired, the pane it fired
+  in, the length of the value, a keyed fingerprint used only to recognise the same finding again —
+  and a **masked preview** showing at most the first four and the last four characters, and never
+  more than a third of the value. A short value renders as a bare `…` and nothing else.
+- **The value exists in one function and then stops existing.** The scanner is a pure function over a
+  string; the type it returns has no field a raw value could travel in, so "did we leak it?" is a
+  question about one module rather than about the whole program. The test suite holds that line from
+  both ends: the scanner's corpus asserts it for every credential it is fed, and every rendering path
+  is run against a known fake credential to assert the full value appears in none of its output.
+- **It makes no network calls of any kind.** No telemetry, no update check, no reporting service, no
+  "verify this key is live" call to a provider. The only thing it talks to is herdr's local socket.
+- **It never writes to your panes.** See [what this does not do](#what-this-does-not-do).
+
+Findings are kept on your machine, under `~/.local/state/herdr/plugins/moneycaringcoder.redact/`, and
+`redact --forget` empties that file.
+
+## Why
+
+Agents `cat .env`, echo tokens into debug logs, and print `curl -H "Authorization: Bearer …"` a dozen
+times an hour. Repository scanners like gitleaks and trufflehog do not help, because nothing here is
+in the repository: the exposure surface is the terminal, and nothing watches that. It is a real
+surface — that pane gets screenshotted into an issue, shared on a stream, or scrolled through in a
+meeting.
+
+The hard part is not detection, it is **precision**. A scanner that cries wolf gets uninstalled within
+a day, and then protects nothing at all. So the rules here lean hard on structure — a prefix a
+provider actually assigns, a JWT header that really base64-decodes to JSON with an `alg` — and a
+handful of patterns that could not be made precise are deliberately left out.
+
+## How it works
+
+Each cycle takes one `session.snapshot` over herdr's socket, reads the recent output of each pane
+that is running an agent, and scans it. What comes out of the scanner is already masked:
+
+<img src="docs/img/pipeline.svg" alt="Pane output is read over herdr's socket and passed, with the rule set, into the scanner — the only place the matched value ever exists. The scanner emits a masked finding, which goes into the findings store, which drives a sidebar badge and at most one toast per rule per pane. Acknowledging a finding clears its badge; the value is still in scrollback." width="100%">
+
+A finding stays until you acknowledge it. A secret that has scrolled out of view is still in that
+pane's scrollback and still exposed, so "it went away on its own" is not a state this plugin has.
+
+Badges are pushed with a TTL of roughly three refresh intervals, which is what makes the display
+self-healing: kill the watcher and herdr expires the badges within a cycle or two rather than leaving
+a stale warning on screen forever.
+
+## What it looks like
+
+In the sidebar, a pane that has printed something picks up a short badge next to its agent name:
+
+```
+  api      claude     ⚠ 2
+  ui       codex      ⚑ 1
+  docs     claude
+```
+
+`⚠ 2` means two confirmed provider credentials; `⚑ 1` means one weak match, which is usually an
+`.env`-style assignment. A pane with nothing to report shows nothing at all — an empty cell means "no
+findings", not "the plugin is broken". The two marks differ in shape and not only in colour, because
+the colour comes from your own config and a badge has to be readable before you have set one. Counts
+abbreviate once they get long (`1.2k`, `12k`), and a badge is never wider than six columns, so it
+cannot push the agent name off the row.
+
+The full picture lives in the **Redact: findings** overlay pane:
+
+```
+redact · findings
+
+1 unacknowledged and 1 acknowledged, from 4 panes scanned.
+2 panes skipped, because they are not running an agent; --all-panes widens the
+  scan.
+
+    id      rule                pane    preview    age
+  ⚠ a1b2c3  AWS access key ID   claude  AKIA…MPLE  1m
+  ✓ b2c3d4  API key assignment  w0:p3   sk-l…9ab2  2h
+
+legend
+  ⚠  a provider credential, not acknowledged
+  ⚑  a weak match, not acknowledged
+  ✓  acknowledged — the value is still in that scrollback
+  age is how long ago the finding was first seen. The preview is masked: at most
+  the first four and last four characters ever leave the scanner.
+```
+
+`a` acknowledges the selected finding, `A` acknowledges every one of them, `j`/`k` or the arrow keys
+move the selection, and `q` quits. The view reflows down to very narrow panes, and where a pane is
+too narrow for a table each finding is stacked over two lines instead of being squeezed into a column
+of ellipses.
+
+**A scan that found nothing and a scan that could not look do not render the same.** Six panes scanned
+and clean says so in words; a cycle that hit a problem says the scan did not complete cleanly and
+lists what went wrong underneath. That distinction is the one thing in this plugin worth being
+pedantic about, because a clean report you cannot trust is worse than no report.
+
+> **Screenshot placeholder.** A capture from a live session belongs here, replacing this block:
+> the herdr sidebar with a `⚠ 2` badge beside an agent pane and a `⚑ 1` beside another, the
+> **Redact: findings** overlay open next to it showing at least one strong finding and one
+> acknowledged one, and every preview visibly masked. Save it as `docs/img/screenshot.png` and
+> reference it here.
+
+## Install
+
+```sh
+herdr plugin install moneycaringcoder/herdr-redact
+```
+
+Installing runs the plugin's build step for you, so you end up with a compiled `target/release/redact`
+and nothing further to do.
+
+To develop against a local checkout instead:
+
+```sh
+git clone https://github.com/moneycaringcoder/herdr-redact
+cd herdr-redact
+cargo build --release          # required: `link` does NOT run the build step
+herdr plugin link .
+```
+
+`herdr plugin link` deliberately skips the `[[build]]` hook, so the binary every command in
+`herdr-plugin.toml` points at will not exist until you build it yourself. Rebuild by hand after every
+change.
+
+Removal:
+
+```sh
+herdr plugin unlink moneycaringcoder.redact
+```
+
+Logs are kept in the server rather than on disk:
+
+```sh
+herdr plugin log list --plugin moneycaringcoder.redact
+```
+
+## Required: add the tokens to your herdr config
+
+**Nothing renders in the sidebar until you do this.** herdr's default sidebar rows do not name any of
+this plugin's tokens, so a freshly installed `redact` will happily scan everything and display none of
+it.
+
+The quickest route is the bundled action — run **Redact: set up sidebar (start here)**. It splices the
+rows below into your `config.toml`, takes a `config.toml.redact-backup` alongside it first, and
+reloads herdr; if the reload fails it puts the backup back byte for byte. **Redact: undo sidebar
+setup** restores that backup.
+
+To do it by hand, add the two tokens to `~/.config/herdr/config.toml`. The agent sidebar is where the
+finding actually is; the spaces sidebar carries it too, because an agent panel can be collapsed and a
+badge nobody can see protects nobody:
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch",
+    { token = "$redact_weak",   fg = "#FFC799" },
+    { token = "$redact_secret", fg = "#FF8080" }],
+]
+
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch",
+    { token = "$redact_weak",   fg = "#FFC799" },
+    { token = "$redact_secret", fg = "#FF8080" }],
+]
+```
+
+Then reload:
+
+```sh
+herdr server reload-config
+```
+
+Sidebar rows reload live — no restart, and no losing your panes.
+
+### Why there are two tokens instead of one
+
+herdr renders a token's *value* as flat text and cannot colour it by content. A single `$redact_status`
+token could say `⚠ 2`, but it could never say it in red. So severity is encoded in the token *name*:
+the plugin lights exactly one of `redact_weak` or `redact_secret` at a time and clears the other, and
+each name carries its own `fg` in your config. The `$` prefix belongs to herdr's config row syntax
+only; the names sent over the wire have no `$`.
+
+There is deliberately no token for a clean pane. A pane with nothing to report clears its badge rather
+than writing an empty one.
+
+Change the colours to taste. The names must stay exactly as written, and both should be present — if
+you leave one out, findings at that level simply show nothing.
+
+## Actions, panes, and verbs
+
+| Action | What it does |
+| --- | --- |
+| **Redact: set up sidebar (start here)** | Adds the tokens above to `config.toml`, backs it up, reloads herdr |
+| **Redact: undo sidebar setup** | Restores the backup that setup took |
+| **Redact: scan now** | One-shot scan of every agent pane |
+| **Redact: JSON snapshot** | The same findings, machine-readable, for scripting |
+| **Redact: list detection rules** | The rules that are actually active, built-in and yours |
+| **Redact: acknowledge all findings** | Clears every current warning |
+| **Redact: enable / disable / toggle pane watcher** | Starts or stops background scanning |
+
+There is one pane, **Redact: findings**, placed as an overlay. It runs the live view shown above,
+refreshes on the configured interval, and acknowledges through the same store the CLI and the daemon
+use, so the three never disagree about what you have dismissed. It exits cleanly on `SIGINT`,
+`SIGTERM` and `SIGHUP`, and restores your terminal on the way out — including if it panics. If its
+stdin is not a terminal it degrades to a refresh-only view rather than failing.
+
+Everything is also available from the command line, which is handy when the plugin is misbehaving:
+
+```
+redact — credential warnings for herdr agent panes
+
+Usage: redact [VERB]
+
+Scanning:
+  --once              Scan every agent pane once, print the findings, exit
+  --json              Print the same findings as JSON and exit
+  --watch             Live findings pane (a acknowledges, A acknowledges all)
+  --rules             List the active detection rules and exit
+
+Findings:
+  --ack <ID>          Acknowledge one finding by id or id prefix
+  --ack-all           Acknowledge every current finding
+  --forget            Clear the findings store entirely
+
+Watcher:
+  --enable            Start the background pane watcher
+  --disable           Stop it and clear every badge this plugin set
+  --toggle            Stop it if running, otherwise start it
+  --restore           Restart it only if it was enabled (herdr startup hook)
+  --daemon            Run the watcher in the foreground (internal)
+  --status            Report whether the watcher is running
+
+Sidebar setup:
+  --setup             Add redact's tokens to herdr's config.toml and reload
+  --setup-rollback    Restore the config.toml backup taken by --setup
+
+Other:
+  --interval <SECS>   Scan interval for --watch and --daemon (default: 5)
+  --lines <N>         Lines of pane output read per scan (default: 400)
+  --all-panes         Scan every pane, not only panes running an agent
+  --version           Print version and exit
+  --help              Show this help
+
+redact reads the terminal output of your panes. It never writes a secret
+anywhere: findings record the rule name, the pane, and a masked preview.
+```
+
+Options may come before or after the verb, so `redact --lines 800 --once` and
+`redact --once --lines 800` are the same command.
+
+The watcher is off until you enable it. Once enabled it survives a herdr restart and a
+`herdr update --handoff`: a startup hook re-spawns it, but only if you had it enabled when herdr went
+away. Disabling it stops the watcher and sweeps every badge this plugin set, so nothing stale is left
+behind.
+
+## Configuration
+
+Configuration is a JSON file at `$HERDR_PLUGIN_CONFIG_DIR/config.json`. herdr injects that directory
+when it runs the plugin; when you run the binary yourself it resolves to the same place herdr would
+use, `~/.config/herdr/plugins/config/moneycaringcoder.redact/config.json`, so both routes read one
+file. Every key is optional and overrides just that default, and unknown keys are ignored, so a config
+written for a newer version will not break an older binary. A missing file is the normal case; a
+malformed one prints a warning and falls back to the defaults rather than taking the scanner down.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `interval_seconds` | `5` | How often the watcher and the findings pane rescan. Clamped to 1–3600. `--interval <SECS>` overrides it for one run. |
+| `lines` | `400` | Lines of output read per pane per cycle. Clamped to 1–20000. Bigger means more history and more to scan. `--lines <N>` overrides it for one run. |
+| `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
+| `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
+| `entropy` | `false` | Reserved for a Shannon-entropy heuristic, which is **not implemented**; see [detection rules](#detection-rules). Setting it is not an error and changes nothing. |
+| `notify` | `true` | Post a herdr toast for a new finding. Rate limited to one per rule per pane per watcher run regardless. |
+| `patterns` | `[]` | Your own rules. Each is `{ name, regex, label?, strong? }`; `strong` defaults to `true`. |
+| `allowlist` | `[]` | Regexes that suppress a finding. A finding is dropped when one matches either the value or the line it was found on. |
+| `ignore_panes` | `[]` | Pane ids never read at all. The escape hatch for a pane that is deliberately full of test credentials. |
+| `max_findings` | `500` | Cap on stored findings, so one pathological pane cannot grow the state file without bound. Oldest acknowledged findings are dropped first. |
+
+A worked example — an internal token format, and two things this repository prints constantly that are
+not worth being told about:
+
+```json
+{
+  "interval_seconds": 10,
+  "lines": 800,
+  "patterns": [
+    {
+      "name": "acme_deploy_key",
+      "label": "Acme deploy key",
+      "regex": "\\bacme_dk_[A-Za-z0-9]{32}\\b",
+      "strong": true
+    },
+    {
+      "name": "internal_session_hint",
+      "label": "Internal session id",
+      "regex": "\\bsess-[0-9a-f]{16}\\b",
+      "strong": false
+    }
+  ],
+  "allowlist": [
+    "EXAMPLE_ONLY",
+    "^\\s*#",
+    "tests/fixtures/"
+  ],
+  "ignore_panes": ["w3:p2"]
+}
+```
+
+A `patterns` entry whose regex does not compile is a hard error from `redact --rules`: you typed it,
+you are looking right at it, and a rule silently dropped is a rule you think is protecting you. Every
+scanning path, on the other hand, falls back to the built-in rules and says so in its notes, because
+one bad line in a config file must not be able to stop the scanner.
+
+`redact --rules` prints what is actually active, which is the answer to "is my pattern working" that
+does not involve trusting this README.
+
+## Widening the scan
+
+Agent panes are scanned by default, because that is the stated exposure surface and it keeps the
+volume of text low. But the shell where somebody actually ran `cat .env` is very often **not** an
+agent pane — it is the ordinary terminal in the next split.
+
+To scan every pane:
+
+```sh
+redact --all-panes --once      # one run
+```
+
+```json
+{ "scan_all_panes": true }     // permanently
+```
+
+Be aware of what you are trading. Every pane means more output to read on every cycle, and more
+chances for something credential-shaped to appear in output that was never a secret — a fixture file
+being catted, a test log, somebody's `--help`. The rules are the same either way, so the precision is
+the same; there is simply more text for them to be precise about. If a particular pane is noisy,
+`ignore_panes` is cheaper than turning the whole thing off.
+
+## Detection rules
+
+Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Strong findings light
+`redact_secret`; weak ones light `redact_weak`.
+
+| Rule | Catches | Confidence |
+| --- | --- | --- |
+| `aws_access_key_id` | `AKIA`/`ASIA`/`AROA`… plus 16 base32 characters | strong |
+| `aws_secret_access_key` | 40 base64 characters, but only next to the key name AWS itself uses | strong |
+| `github_token` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | strong |
+| `github_pat` | fine-grained `github_pat_…` | strong |
+| `anthropic_api_key` | `sk-ant-…` | strong |
+| `openai_api_key` | `sk-proj-`, `sk-svcacct-`, `sk-admin-`, or `sk-` plus 48 characters | strong |
+| `stripe_secret_key` | `sk_live_`, `rk_live_` | strong |
+| `slack_token` | `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-` | strong |
+| `slack_webhook_url` | `https://hooks.slack.com/services/…` | strong |
+| `google_api_key` | `AIza…` | strong |
+| `google_oauth_client_secret` | `GOCSPX-…` | strong |
+| `gitlab_pat` | `glpat-…` | strong |
+| `npm_token` | `npm_…` | strong |
+| `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
+| `sendgrid_api_key` | `SG.…` | strong |
+| `huggingface_token` | `hf_…` | strong |
+| `jwt` | three base64url segments **whose header really decodes to JSON with `alg`** | strong |
+| `private_key_block` | `-----BEGIN … PRIVATE KEY-----`, including one cut off by the line budget | strong |
+| `url_credentials` | a password embedded in a URL, `scheme://user:pass@host` | weak |
+| `http_bearer_token` | `Authorization: Bearer …` | weak |
+| `env_assignment` | `FOO_TOKEN=…` and `foo_secret: …` at the start of a line | weak |
+
+### What is deliberately not caught
+
+Precision is the product, so several obvious candidates are left out on purpose:
+
+- **Stripe test keys** (`sk_test_`, `rk_test_`). They live in public documentation, CI fixtures and
+  sample apps, and leaking one costs nothing. Firing on them is pure cry-wolf.
+- **Twilio.** The `AC…`/`SK…` SIDs are identifiers rather than secrets, and the auth token is 32 bare
+  hex characters — indistinguishable from a git object id.
+- **Cloudflare API tokens.** Forty characters of `[A-Za-z0-9_-]` with no prefix at all.
+- **Generic "high-entropy" strings.** A 32- or 40-character hex or base64 run with no surrounding
+  context is a commit id, a checksum, a UUID, an image blob, or a minified bundle far more often than
+  it is a key.
+- **The entropy heuristic.** The `entropy` config key exists and is **off by default**, and it is
+  currently **not implemented**: setting it changes nothing and the scanner records a note saying so.
+  Shannon entropy over terminal output is the false-positive machine this plugin exists to avoid
+  being, and there is no version of it that survives a page of base64.
+
+The `.env`-style assignment rule is the one broad heuristic that does ship, which is why it reports at
+weak confidence and gets its own badge colour. It is anchored to the start of a line, insists the name
+looks like a secret (`*_TOKEN`, `*_SECRET`, `*_KEY`, `PASSWORD`) and not like a red herring
+(`PUBLIC_KEY`, `TOKEN_FILE`, `TEST_TOKEN`), and drops values that are obviously placeholders
+(`changeme`, `true`, `localhost`, `xxx`).
+
+Add what your team uses through `patterns`, and silence what your repository prints through
+`allowlist`. Both are ordinary regexes.
+
+## What this does not do
+
+It never acts on a finding. Acting on a false positive inside somebody's terminal — clearing a pane
+mid-command, interrupting an agent that was fine — would be far worse than a missed warning, so it is
+not a feature that exists to be misfired. Specifically:
+
+- **It never writes to a pane.** No keystrokes, no commands, no `clear`, no interrupt, no signal to
+  anything it did not start.
+- **It never edits a repository.** It does not run git, does not touch files in your working tree, and
+  has no opinion about your `.gitignore`.
+- **It never rotates or revokes anything.** It does not know how, and it never contacts a provider to
+  find out whether a key is live.
+- **It never phones home.** No telemetry, no update check, no crash reporting. It makes no network
+  calls of any kind; the only socket it opens is herdr's, on your machine.
+- **It never stores a secret**, in any file it writes, including the ones you would send a maintainer
+  to debug it.
+
+The one file outside its own state directory it will ever write is your herdr `config.toml`, and only
+when you run `--setup` — which takes a backup first, refuses to clobber an existing one, is additive
+(nothing is ever deleted), is a no-op the second time, and restores the backup byte for byte if herdr
+rejects the result.
+
+## Limitations
+
+Worth knowing before you trust it:
+
+- **It polls.** Panes are read on the refresh interval and not before, so a five-second badge is a
+  five-second-old badge.
+- **It sees a window, not history.** Each cycle reads the most recent `lines` lines of each pane, so
+  something that scrolled far past before you enabled the watcher is not found. Where herdr had more
+  output than the budget allowed, the report says so rather than implying it saw everything.
+- **Only agent panes, by default.** See [widening the scan](#widening-the-scan).
+- **Acknowledgement is not remediation.** Acknowledging a finding clears a badge. The value is still
+  in that pane's scrollback, and still in whatever wrote it there. Rotate the key.
+- **Recall is traded for precision, on purpose.** A key format nobody can match precisely is a key
+  format this plugin does not report. It is designed to be believable rather than exhaustive.
+- **Linux and macOS only.** The watcher relies on Unix process and signal behaviour, and the plugin
+  declares those two platforms.
+
+## Contributing
+
+Bug reports, questions and documentation fixes are welcome through the issue tracker. A missed
+credential format is a useful report; please describe the *shape* of what was missed rather than
+pasting a real one.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

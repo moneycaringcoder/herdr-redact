@@ -1,9 +1,6 @@
 //! The findings store: what has been seen, what has been acknowledged, and what
 //! has already been shouted about.
 //!
-//! STUB — owned by the `surface` builder. The signatures below are the contract
-//! the rest of the crate compiles against; the bodies are placeholders.
-//!
 //! # Contract
 //!
 //! * Nothing written to disk may contain a secret. The store persists the
@@ -16,23 +13,109 @@
 //! * A finding whose pane no longer exists is pruned: its scrollback died with
 //!   the pane, so there is nothing left to warn about.
 //! * Notifications are rate limited to one per pattern per pane per daemon run.
+//!
+//! # Why the on-disk types live here and not in `model`
+//!
+//! [`Finding`] deliberately has no `Serialize` implementation. Persistence goes
+//! through [`StoredFinding`] in this file, which names every field it writes out
+//! by hand. Adding a field to `Finding` therefore cannot silently start writing
+//! it to disk — someone has to come here and type its name, which is the moment
+//! to ask whether it is safe to store.
 
-use crate::config::Config;
-use crate::model::{DigestKey, Finding, Match, PaneRef, Report};
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+use crate::config::{self, Config};
+use crate::model::{Confidence, DigestKey, Finding, Match, PaneRef, Report};
 use crate::Result;
 
-#[derive(Debug, Default)]
+/// Bumped only when the on-disk shape changes incompatibly. Unknown fields are
+/// ignored on read, so additive changes do not need it.
+const FILE_VERSION: u32 = 1;
+
+/// Key for the change stamp, which is not a security boundary: it only answers
+/// "did another process rewrite the findings file since we last touched it".
+const STAMP_KEY: DigestKey = [0u8; 16];
+
+/// Permissions for everything this module writes. The findings file carries
+/// masked previews and the pane layout of a developer's machine, and the key
+/// file is the only thing standing between a stored digest and a dictionary
+/// attack on a low-entropy secret.
+const PRIVATE: u32 = 0o600;
+
+#[derive(Debug)]
 pub struct Store {
     key: DigestKey,
     findings: Vec<Finding>,
+    path: PathBuf,
+    max_findings: usize,
+    /// Problems raised while loading, or by the cap. Folded into every report,
+    /// because "no findings" and "I could not read my own state" must not look
+    /// the same.
+    notes: Vec<String>,
+    /// `(pattern, pane_id)` pairs already toasted. Deliberately **not**
+    /// persisted: the limit is one toast per pattern per pane per daemon *run*,
+    /// and a restart is a new run.
+    notified: HashSet<(String, String)>,
+    /// Hash of the text last scanned per pane, so an unchanged pane costs
+    /// nothing. `PaneReadResult.revision` cannot be used for this — it is always
+    /// zero on the wire (trap 3 in docs/herdr-protocol.md).
+    ///
+    /// It lives here rather than in the daemon because the store is the one
+    /// per-run object threaded through every cycle, and `scan_cycle`'s signature
+    /// has nowhere else to keep state that must outlive a single cycle.
+    seen_text: HashMap<String, u64>,
+    /// Findings first seen since the last drain, awaiting a notification
+    /// decision. [`Store::observe`] returns the same list, but `scan_cycle`
+    /// returns a [`Report`] and has no channel to hand them back through, so
+    /// they are queued here and drained by [`Store::take_new_findings`].
+    pending: Vec<Finding>,
+    /// Digest of the findings file as we last read or wrote it, so an
+    /// acknowledgement made by another process (`redact --ack` from a shell)
+    /// can be noticed rather than clobbered by the daemon's next save.
+    ///
+    /// A content digest rather than an mtime: filesystem timestamp granularity
+    /// is a whole second on some filesystems, which is shorter than a scan
+    /// interval and would lose writes.
+    stamp: Cell<Option<u64>>,
 }
 
 impl Store {
     /// Loads the persisted store, or an empty one. Best effort and never fails:
     /// an unreadable state file must not stop the scanner from running, though
     /// it must say so.
-    pub fn load(_config: &Config) -> Self {
-        Self::default()
+    pub fn load(config: &Config) -> Self {
+        let mut notes = Vec::new();
+        let dir = config::state_dir();
+        if let Err(err) = fs::create_dir_all(&dir) {
+            notes.push(format!(
+                "could not create the state directory {} ({err}) — findings and acknowledgements \
+                 will not be remembered",
+                dir.display()
+            ));
+        }
+        let key = load_or_create_key(&config::key_file(), &mut notes);
+        let path = config::findings_file();
+        let (findings, stamp) = read_state(&path, &mut notes);
+
+        let mut store = Self {
+            key,
+            findings,
+            path,
+            max_findings: config.max_findings.max(1),
+            notes,
+            notified: HashSet::new(),
+            seen_text: HashMap::new(),
+            pending: Vec::new(),
+            stamp: Cell::new(stamp),
+        };
+        // A file written by a build with a larger cap must not stay over it.
+        store.enforce_cap();
+        store
     }
 
     /// The per-installation digest key, drawn on first use and persisted.
@@ -42,53 +125,515 @@ impl Store {
 
     /// Folds one pane's matches into the store. Returns the findings that are
     /// new — the ones a notification would be about.
-    pub fn observe(&mut self, _pane: &PaneRef, _matches: &[Match], _now: u64) -> Vec<Finding> {
-        Vec::new()
+    ///
+    /// Re-observing an existing finding updates `last_seen` and nothing else. It
+    /// must not un-acknowledge it and must not be reported as new, or a
+    /// dismissed warning would come straight back on the next cycle.
+    pub fn observe(&mut self, pane: &PaneRef, matches: &[Match], now: u64) -> Vec<Finding> {
+        let mut fresh = Vec::new();
+        for candidate in matches {
+            let id = Finding::fingerprint(&candidate.pattern, &pane.pane_id, candidate.digest);
+            // The same secret twice in one pane is one finding: the fingerprint
+            // does not carry the line number, so the second sighting lands here.
+            if let Some(existing) = self.findings.iter_mut().find(|f| f.id == id) {
+                existing.last_seen = now;
+                continue;
+            }
+            let finding = Finding {
+                id,
+                pattern: candidate.pattern.clone(),
+                label: candidate.label.clone(),
+                confidence: candidate.confidence,
+                preview: candidate.preview.clone(),
+                value_len: candidate.value_len,
+                pane_id: pane.pane_id.clone(),
+                workspace_id: pane.workspace_id.clone(),
+                pane_label: pane.label().to_string(),
+                line: candidate.line,
+                digest: candidate.digest,
+                first_seen: now,
+                last_seen: now,
+                acknowledged: false,
+            };
+            self.findings.push(finding.clone());
+            fresh.push(finding);
+        }
+        self.pending.extend(fresh.iter().cloned());
+        self.enforce_cap();
+        fresh
     }
 
     /// Drops findings whose pane is no longer in the session.
-    pub fn prune_to(&mut self, _live_pane_ids: &[String]) -> usize {
-        0
+    ///
+    /// The pane's scrollback died with the pane, so there is nothing left to
+    /// warn about. The per-pane caches go with them, so a long-lived daemon in a
+    /// churning session does not grow without bound.
+    pub fn prune_to(&mut self, live_pane_ids: &[String]) -> usize {
+        let before = self.findings.len();
+        self.findings
+            .retain(|finding| live_pane_ids.iter().any(|id| id == &finding.pane_id));
+        self.seen_text
+            .retain(|pane_id, _| live_pane_ids.iter().any(|id| id == pane_id));
+        self.notified
+            .retain(|(_, pane_id)| live_pane_ids.iter().any(|id| id == pane_id));
+        before - self.findings.len()
     }
 
     /// Acknowledges by id or unambiguous id prefix. Returns how many were
     /// acknowledged; zero is an error at the call site, not here.
-    pub fn acknowledge(&mut self, _id: &str) -> usize {
-        0
+    ///
+    /// An ambiguous prefix acknowledges nothing: silently picking one of two
+    /// findings would leave the user believing they had dismissed the other.
+    pub fn acknowledge(&mut self, id: &str) -> usize {
+        let needle = id.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return 0;
+        }
+        let index = match self.findings.iter().position(|f| f.id == needle) {
+            Some(index) => index,
+            None => {
+                let mut hits = self
+                    .findings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.id.starts_with(&needle));
+                match (hits.next(), hits.next()) {
+                    (Some((index, _)), None) => index,
+                    _ => return 0,
+                }
+            }
+        };
+        self.findings[index].acknowledged = true;
+        1
     }
 
+    /// Acknowledges everything outstanding. Returns how many findings changed,
+    /// so acknowledging an already-quiet store reports zero rather than lying.
     pub fn acknowledge_all(&mut self) -> usize {
-        0
+        let mut count = 0;
+        for finding in &mut self.findings {
+            if !finding.acknowledged {
+                finding.acknowledged = true;
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Forgets everything, acknowledged or not. The state file is rewritten
     /// empty rather than deleted, so the digest key survives.
+    ///
+    /// The notification limiter is *not* reset: this is still the same daemon
+    /// run, and a user who cleared the list did not ask to be toasted again.
     pub fn forget_all(&mut self) -> usize {
-        0
+        let count = self.findings.len();
+        self.findings.clear();
+        self.pending.clear();
+        count
     }
 
     /// Whether a toast should be posted for this finding, and marks it shouted
     /// about. One per pattern per pane per daemon run.
-    pub fn claim_notification(&mut self, _finding: &Finding) -> bool {
-        false
+    pub fn claim_notification(&mut self, finding: &Finding) -> bool {
+        self.notified
+            .insert((finding.pattern.clone(), finding.pane_id.clone()))
+    }
+
+    /// Findings first seen since the last drain. The daemon notifies from this;
+    /// the one-shot verbs drop it on the floor, which is why `--once` is silent.
+    pub fn take_new_findings(&mut self) -> Vec<Finding> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Whether this pane's text differs from the last text scanned for it, and
+    /// records the new text as scanned.
+    ///
+    /// A cache hit means "do not scan again", never "this pane has no findings":
+    /// the existing findings are untouched and stay in the report.
+    pub fn pane_text_changed(&mut self, pane_id: &str, text: &str) -> bool {
+        let hash = crate::model::digest(&self.key, text);
+        if self.seen_text.get(pane_id) == Some(&hash) {
+            return false;
+        }
+        self.seen_text.insert(pane_id.to_string(), hash);
+        true
+    }
+
+    /// Re-reads the findings file if another process has rewritten it, keeping
+    /// this run's in-memory state (the key, the notification limiter).
+    ///
+    /// Without this a daemon would hold a stale copy of the findings and its
+    /// next save would silently undo an acknowledgement the user made from a
+    /// shell. Returns whether anything was reloaded.
+    pub fn reload_if_changed(&mut self, config: &Config) -> bool {
+        let stamp = fs::read(&self.path)
+            .ok()
+            .map(|bytes| crate::model::digest(&STAMP_KEY, &String::from_utf8_lossy(&bytes)));
+        if stamp == self.stamp.get() {
+            return false;
+        }
+        let mut notes = Vec::new();
+        let (findings, stamp) = read_state(&self.path, &mut notes);
+        self.findings = findings;
+        self.stamp.set(stamp);
+        self.max_findings = config.max_findings.max(1);
+        for note in notes {
+            self.push_note(note);
+        }
+        // Someone may have forgotten everything; the panes' text has not changed
+        // so the cache would keep us from ever looking at them again.
+        self.seen_text.clear();
+        self.enforce_cap();
+        true
     }
 
     /// Every finding, unacknowledged first, then most recently seen first.
     pub fn findings(&self) -> Vec<Finding> {
-        self.findings.clone()
+        let mut findings = self.findings.clone();
+        // Ties broken by id so two findings seen in the same second do not swap
+        // places between cycles and make the pane flicker.
+        findings.sort_by(|a, b| {
+            a.acknowledged
+                .cmp(&b.acknowledged)
+                .then(b.last_seen.cmp(&a.last_seen))
+                .then(a.id.cmp(&b.id))
+        });
+        findings
     }
 
-    /// Builds the report the renderers consume.
+    /// Builds the report the renderers consume. The store's own notes come
+    /// first: a state file it could not read explains everything below it.
     pub fn report(&self, notes: Vec<String>) -> Report {
+        let mut all = self.notes.clone();
+        for note in notes {
+            if !all.contains(&note) {
+                all.push(note);
+            }
+        }
         Report {
             findings: self.findings(),
-            notes,
+            notes: all,
             generated_at: crate::model::now(),
             ..Report::default()
         }
     }
 
+    /// Writes the store out atomically: a temp file in the same directory, then
+    /// a rename. A daemon killed mid-write cannot leave a half-written file that
+    /// loses every acknowledgement.
     pub fn save(&self) -> Result<()> {
+        let dir = self
+            .path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", self.path.display()))?;
+        fs::create_dir_all(dir)?;
+
+        let file = StoredFile {
+            version: FILE_VERSION,
+            findings: self.findings.iter().map(StoredFinding::from).collect(),
+        };
+        let mut body = serde_json::to_string_pretty(&file)?;
+        body.push('\n');
+
+        // Same directory, so the rename is atomic; pid in the name so two
+        // processes saving at once cannot corrupt each other's temp file.
+        let name = self
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "findings.json".to_string());
+        let temp = dir.join(format!("{name}.tmp.{}", std::process::id()));
+
+        // Created 0600 from the start: a chmod after the write leaves a window
+        // in which the file is world-readable.
+        let mut handle = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(PRIVATE)
+            .open(&temp)?;
+        handle.write_all(body.as_bytes())?;
+        handle.sync_all()?;
+        drop(handle);
+
+        if let Err(err) = fs::rename(&temp, &self.path) {
+            let _ = fs::remove_file(&temp);
+            return Err(Box::new(err));
+        }
+        self.stamp
+            .set(Some(crate::model::digest(&STAMP_KEY, &body)));
         Ok(())
     }
+
+    fn push_note(&mut self, note: String) {
+        if !self.notes.contains(&note) {
+            self.notes.push(note);
+        }
+    }
+
+    /// Keeps the store under `max_findings`.
+    ///
+    /// Acknowledged findings go first, least recently seen first: the user has
+    /// already looked at them. An unacknowledged finding is only ever dropped
+    /// when there is nothing acknowledged left to drop, and that is loud —
+    /// silently forgetting a warning is the one thing this store must not do.
+    fn enforce_cap(&mut self) {
+        while self.findings.len() > self.max_findings {
+            let acknowledged = self
+                .findings
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.acknowledged)
+                .min_by(|(_, a), (_, b)| {
+                    (a.last_seen, a.first_seen, &a.id).cmp(&(b.last_seen, b.first_seen, &b.id))
+                })
+                .map(|(index, _)| index);
+            match acknowledged {
+                Some(index) => {
+                    self.findings.remove(index);
+                }
+                None => {
+                    let index = self
+                        .findings
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| {
+                            (a.first_seen, a.last_seen, &a.id).cmp(&(
+                                b.first_seen,
+                                b.last_seen,
+                                &b.id,
+                            ))
+                        })
+                        .map(|(index, _)| index)
+                        .unwrap_or(0);
+                    self.findings.remove(index);
+                    let cap = self.max_findings;
+                    self.push_note(format!(
+                        "the findings cap of {cap} was reached with nothing acknowledged; the \
+                         oldest unacknowledged findings were dropped and are no longer being \
+                         reported"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// On-disk shape
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct StoredFile {
+    version: u32,
+    #[serde(default)]
+    findings: Vec<StoredFinding>,
+}
+
+/// One persisted finding.
+///
+/// Every field here was chosen deliberately. `preview` is masked at the source
+/// by `scan::mask` and `digest` is keyed by the per-installation key, so the
+/// file identifies a credential without containing one.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct StoredFinding {
+    id: String,
+    pattern: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    confidence: String,
+    #[serde(default)]
+    preview: String,
+    #[serde(default)]
+    value_len: usize,
+    pane_id: String,
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    pane_label: String,
+    #[serde(default)]
+    line: usize,
+    digest: u64,
+    #[serde(default)]
+    first_seen: u64,
+    #[serde(default)]
+    last_seen: u64,
+    #[serde(default)]
+    acknowledged: bool,
+}
+
+impl From<&Finding> for StoredFinding {
+    fn from(finding: &Finding) -> Self {
+        Self {
+            id: finding.id.clone(),
+            pattern: finding.pattern.clone(),
+            label: finding.label.clone(),
+            confidence: finding.confidence.as_str().to_string(),
+            preview: finding.preview.clone(),
+            value_len: finding.value_len,
+            pane_id: finding.pane_id.clone(),
+            workspace_id: finding.workspace_id.clone(),
+            pane_label: finding.pane_label.clone(),
+            line: finding.line,
+            digest: finding.digest,
+            first_seen: finding.first_seen,
+            last_seen: finding.last_seen,
+            acknowledged: finding.acknowledged,
+        }
+    }
+}
+
+impl StoredFinding {
+    fn into_finding(self) -> Finding {
+        Finding {
+            id: self.id,
+            pattern: self.pattern,
+            label: self.label,
+            // An unrecognised level came from a newer build. Reading it as the
+            // louder one keeps a real credential loud; the other way round a
+            // downgrade would quietly demote it to a hint.
+            confidence: match self.confidence.as_str() {
+                "weak" => Confidence::Weak,
+                _ => Confidence::Strong,
+            },
+            preview: self.preview,
+            value_len: self.value_len,
+            pane_id: self.pane_id,
+            workspace_id: self.workspace_id,
+            pane_label: self.pane_label,
+            line: self.line,
+            digest: self.digest,
+            first_seen: self.first_seen,
+            last_seen: self.last_seen,
+            acknowledged: self.acknowledged,
+        }
+    }
+}
+
+/// Reads the findings file. Returns the findings and the change stamp.
+///
+/// Every failure below is a note rather than an error: the scanner has to keep
+/// running. But none of them is silent, because an empty report from a store
+/// that could not be read looks exactly like a clean session.
+fn read_state(path: &Path, notes: &mut Vec<String>) -> (Vec<Finding>, Option<u64>) {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), None),
+        Err(err) => {
+            notes.push(format!(
+                "could not read the findings file {} ({err}) — this report shows no history, \
+                 which is not the same as a clean session",
+                path.display()
+            ));
+            return (Vec::new(), None);
+        }
+    };
+    let stamp = Some(crate::model::digest(&STAMP_KEY, &raw));
+    if raw.trim().is_empty() {
+        return (Vec::new(), stamp);
+    }
+    match serde_json::from_str::<StoredFile>(&raw) {
+        Ok(file) => (
+            file.findings
+                .into_iter()
+                .map(StoredFinding::into_finding)
+                .collect(),
+            stamp,
+        ),
+        Err(err) => {
+            // Kept rather than overwritten: the next save would destroy it, and
+            // a state file this plugin could not parse is worth a bug report.
+            let backup = path.with_extension("json.corrupt");
+            let kept = fs::rename(path, &backup).is_ok();
+            notes.push(format!(
+                "the findings file {} is malformed ({err}) — earlier acknowledgements are lost \
+                 and this report shows no history, which is not the same as a clean session{}",
+                path.display(),
+                if kept {
+                    format!("; the unreadable file was kept as {}", backup.display())
+                } else {
+                    String::new()
+                }
+            ));
+            (Vec::new(), None)
+        }
+    }
+}
+
+/// The per-installation digest key: read it, or draw a new one and persist it.
+///
+/// It never changes once written. A new key would re-fingerprint every stored
+/// finding, so every acknowledgement the user had made would come back as a
+/// fresh warning.
+fn load_or_create_key(path: &Path, notes: &mut Vec<String>) -> DigestKey {
+    if let Ok(raw) = fs::read_to_string(path) {
+        if let Some(key) = parse_key(raw.trim()) {
+            return key;
+        }
+        notes.push(format!(
+            "the digest key in {} is unreadable; a new one was drawn, so findings acknowledged \
+             before now will be reported again once",
+            path.display()
+        ));
+    }
+
+    let key = draw_key(notes);
+    let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    if let Err(err) = write_private(path, &hex) {
+        notes.push(format!(
+            "could not store the digest key in {} ({err}); acknowledgements will not survive a \
+             restart",
+            path.display()
+        ));
+    }
+    key
+}
+
+fn parse_key(raw: &str) -> Option<DigestKey> {
+    if raw.len() != 32 || !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut key = [0u8; 16];
+    for (index, slot) in key.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&raw[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(key)
+}
+
+/// 16 bytes from `/dev/urandom`.
+///
+/// The fallback is deliberately weak and deliberately loud. A predictable key
+/// makes the stored digests guessable for a low-entropy secret, which is the one
+/// thing keying them was for, so it must not pass unremarked.
+fn draw_key(notes: &mut Vec<String>) -> DigestKey {
+    let mut key = [0u8; 16];
+    // `read_exact` rather than `fs::read`: /dev/urandom is an endless stream and
+    // never reaches EOF, so reading it to the end would never return.
+    let drawn = fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut key));
+    match drawn {
+        Ok(()) => return key,
+        Err(err) => notes.push(format!(
+            "could not read /dev/urandom ({err}); the digest key for this installation is derived \
+             from the clock and is not unpredictable"
+        )),
+    }
+    let seed = crate::model::now() ^ (u64::from(std::process::id()) << 32);
+    key[..8].copy_from_slice(&seed.to_le_bytes());
+    key[8..].copy_from_slice(&seed.rotate_left(17).to_be_bytes());
+    key
+}
+
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut handle = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(PRIVATE)
+        .open(path)?;
+    handle.write_all(contents.as_bytes())?;
+    handle.write_all(b"\n")
 }

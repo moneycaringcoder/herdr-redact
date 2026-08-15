@@ -163,6 +163,11 @@ pub struct Finding {
     pub acknowledged: bool,
 }
 
+/// Characters of the fingerprint a user has to type for `--ack`. Six hex
+/// characters is 24 bits, which is ample for the handful of findings a session
+/// produces and short enough to read off a sidebar and retype.
+pub const SHORT_ID_CHARS: usize = 6;
+
 impl Finding {
     /// Identity of a finding: the same credential, in the same pane, from the
     /// same rule. Deliberately *not* keyed on the line number — output scrolls,
@@ -176,8 +181,15 @@ impl Finding {
 
     /// The short handle a user types. Long enough that collisions are not a
     /// practical concern for the handful of findings a session produces.
+    ///
+    /// Sliced on a character boundary rather than a byte one. Our own ids are
+    /// hex and so can never need it, but a hand-edited state file is not our
+    /// own, and this is a display path — it must not be able to panic.
     pub fn short_id(&self) -> &str {
-        &self.id[..self.id.len().min(6)]
+        match self.id.char_indices().nth(SHORT_ID_CHARS) {
+            Some((end, _)) => &self.id[..end],
+            None => &self.id,
+        }
     }
 }
 

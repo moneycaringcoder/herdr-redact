@@ -96,95 +96,173 @@ pub fn plan_edit(text: &str) -> Option<String> {
 
 /// Splices the entries into one section's rows array, or appends a complete
 /// section when the user has none. `None` means nothing was changed.
+///
+/// The scan is character-level rather than line-level because both shapes occur
+/// in real configs: `rows` spread over many lines with one row per line, and the
+/// whole array on a single line. A line-oriented version of this got the second
+/// case wrong by splicing at the last `]` on the line, which is the one closing
+/// the *rows array* rather than the last row — valid TOML that herdr accepts and
+/// then renders nothing from.
 fn splice_section(text: &str, section: &str) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let section_start = lines
-        .iter()
-        .position(|line| line.trim_start().starts_with(section));
-
-    let Some(section_start) = section_start else {
+    let Some(section_start) = find_section(text, section) else {
         // Only the spaces sidebar is worth inventing from nothing. A user with
-        // no `[ui.sidebar.agents]` section is using herdr's default agent rows,
-        // and replacing those wholesale would be a much bigger change than they
+        // no `[ui.sidebar.agents]` section is on herdr's default agent rows, and
+        // replacing those wholesale would be a much bigger change than they
         // asked for.
         return (section == SECTIONS[0]).then(|| append_section(text, section));
     };
+    let section_end = next_section(text, section_start);
+    let region = &text[section_start..section_end];
 
-    // Find the LAST row inside this section's rows array, and its final line.
-    //
-    // The entries have to land inside a row, not beside one. `rows` is an array
-    // of arrays, and each inner array is one rendered line; a bare table dropped
-    // between two rows is still valid TOML, so herdr accepts the file and then
-    // renders nothing at all. That failure is invisible — which is exactly how
-    // it shipped past a passing test suite once already, in collide.
-    //
-    // Depth 1 is inside `rows`, depth 2 is inside a row.
-    let mut depth = 0usize;
-    let mut in_rows = false;
-    let mut row_span: Option<(usize, usize)> = None;
-    let mut row_start: Option<usize> = None;
+    let rows_open = find_rows_array(region)? + section_start;
+    let (row_open, row_close) = last_row_span(text, rows_open)?;
 
-    for (offset, line) in lines.iter().enumerate().skip(section_start + 1) {
-        let trimmed = line.trim_start();
-        if !in_rows {
-            if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
-                break; // next table; this section has no rows array
+    // Insert after the row's last piece of content rather than immediately
+    // before its `]`. Whatever whitespace separated the two — nothing at all, or
+    // a newline and the closing bracket's own indentation — is then preserved
+    // exactly, which is what keeps the result looking hand-written in both
+    // layouts herdr's own examples use.
+    let content_end = text[..row_close]
+        .trim_end_matches([' ', '\t', '\n', '\r'])
+        .len();
+    let head = &text[row_open..content_end];
+    // An empty row needs no separator; anything else needs the comma the user's
+    // last entry does not have, because their `]` followed it directly.
+    let separator = if head.ends_with('[') { "" } else { "," };
+
+    let entries: Vec<String> = token_lines()
+        .into_iter()
+        .map(|line| line.trim().trim_end_matches(',').to_string())
+        .collect();
+
+    // A row written across several lines gets the entries as their own lines,
+    // matching the surrounding style; a row on one line gets them inline.
+    let mut insert = String::from(separator);
+    if head.contains('\n') {
+        let indent = line_indent(text, content_end);
+        for (n, entry) in entries.iter().enumerate() {
+            insert.push('\n');
+            insert.push_str(&indent);
+            insert.push_str(entry);
+            if n + 1 < entries.len() {
+                insert.push(',');
             }
-            if trimmed.starts_with("rows") && trimmed.contains('[') {
-                in_rows = true;
-                depth = line.matches('[').count() - line.matches(']').count();
-                continue;
+        }
+    } else {
+        insert.push(' ');
+        insert.push_str(&entries.join(", "));
+    }
+
+    let mut out = String::with_capacity(text.len() + insert.len());
+    out.push_str(&text[..content_end]);
+    out.push_str(&insert);
+    out.push_str(&text[content_end..]);
+    Some(out)
+}
+
+/// Byte offset of a top-level table header, matched at the start of a line.
+fn find_section(text: &str, section: &str) -> Option<usize> {
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with(section) {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// Byte offset where the next top-level table starts, or the end of the file.
+/// A row line such as `["$context"],` also begins with `[`, so a header is only
+/// recognised when the bracket is followed by a bare key.
+fn next_section(text: &str, from: usize) -> usize {
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let here = offset;
+        offset += line.len();
+        if here <= from {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let after = trimmed.trim_start_matches('[');
+        if trimmed.starts_with('[')
+            && after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        {
+            return here;
+        }
+    }
+    text.len()
+}
+
+/// Byte offset, within `region`, of the `[` that opens this section's `rows`
+/// array.
+fn find_rows_array(region: &str) -> Option<usize> {
+    let mut offset = 0usize;
+    for line in region.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("rows") && line.contains('[') {
+            return line.find('[').map(|column| offset + column);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// Byte offsets of the opening `[` and the closing `]` of the **last** row in
+/// the array opened at `rows_open`.
+///
+/// Quoted strings are skipped, so a token value containing a bracket cannot move
+/// the insert point.
+fn last_row_span(text: &str, rows_open: usize) -> Option<(usize, usize)> {
+    let mut depth = 1usize; // inside the rows array
+    let mut in_string = false;
+    let mut row_open: Option<usize> = None;
+    let mut span: Option<(usize, usize)> = None;
+
+    for (offset, ch) in text[rows_open + 1..].char_indices() {
+        let at = rows_open + 1 + offset;
+        if in_string {
+            if ch == '"' {
+                in_string = false;
             }
             continue;
         }
-
-        for ch in line.chars() {
-            match ch {
-                '[' => {
-                    depth += 1;
-                    if depth == 2 && row_start.is_none() {
-                        row_start = Some(offset);
-                    }
+        match ch {
+            '"' => in_string = true,
+            '[' => {
+                depth += 1;
+                if depth == 2 {
+                    row_open = Some(at);
                 }
-                ']' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 1 {
-                        if let Some(start) = row_start.take() {
-                            row_span = Some((start, offset));
-                        }
-                    }
-                }
-                _ => {}
             }
-        }
-        if depth == 0 {
-            break; // rows array closed
-        }
-    }
-
-    let (row_start, row_end) = row_span?;
-    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-
-    if row_start == row_end {
-        // A single-line row: splice the entries in before its closing bracket.
-        let line = out[row_end].clone();
-        let close = line.rfind(']')?;
-        let (head, tail) = line.split_at(close);
-        let head = head.trim_end();
-        let separator = if head.ends_with('[') { "" } else { "," };
-        let entries: Vec<String> = token_lines()
-            .into_iter()
-            .map(|l| l.trim().trim_end_matches(',').to_string())
-            .collect();
-        out[row_end] = format!("{head}{separator} {}{tail}", entries.join(", "));
-    } else {
-        // A multi-line row: insert before its final line, which carries the
-        // closing bracket. The preceding line already ends in a comma.
-        for (n, line) in token_lines().into_iter().enumerate() {
-            out.insert(row_end + n, line);
+            ']' => {
+                if depth == 2 {
+                    if let Some(open) = row_open.take() {
+                        span = Some((open, at));
+                    }
+                }
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
-    Some(finish(out, text))
+    span
+}
+
+/// The leading whitespace of the line containing `offset`, so an inserted block
+/// leaves the closing bracket where it was.
+fn line_indent(text: &str, offset: usize) -> String {
+    let start = text[..offset].rfind('\n').map_or(0, |n| n + 1);
+    text[start..offset]
+        .chars()
+        .take_while(|c| c.is_whitespace() && *c != '\n')
+        .collect()
 }
 
 fn append_section(text: &str, section: &str) -> String {
@@ -199,14 +277,6 @@ fn append_section(text: &str, section: &str) -> String {
         out.push('\n');
     }
     out.push_str("  ],\n]\n");
-    out
-}
-
-fn finish(lines: Vec<String>, original: &str) -> String {
-    let mut out = lines.join("\n");
-    if original.ends_with('\n') {
-        out.push('\n');
-    }
     out
 }
 

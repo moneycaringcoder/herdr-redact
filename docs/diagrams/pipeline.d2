@@ -1,0 +1,82 @@
+# The mechanism, end to end: pane output becomes a finding, a finding becomes a
+# badge, and an acknowledgement takes the badge away. Rendered to
+# docs/img/pipeline.svg.
+#
+# The point the picture has to make is the red node: the matched value exists
+# there and nowhere else. Everything downstream of it carries a masked preview,
+# a length and a keyed digest instead.
+#
+# Kept deliberately shallow — five nodes on the longest path — because the
+# rendered width is the length of that path, and a README gives a diagram about
+# 900 columns before the labels stop being readable.
+#
+# No unicode marks in labels: d2's bundled font has no glyph for them and they
+# render as tofu.
+
+direction: right
+
+classes: {
+  node: {
+    shape: rectangle
+    style: {
+      stroke: "#8b949e"
+      font-color: "#57606a"
+      fill: transparent
+      stroke-width: 2
+    }
+  }
+  secret: {
+    shape: rectangle
+    style: {
+      stroke: "#e05252"
+      font-color: "#b32222"
+      fill: transparent
+      stroke-width: 3
+      bold: true
+    }
+  }
+  masked: {
+    shape: rectangle
+    style: {
+      stroke: "#d9a441"
+      font-color: "#9a6700"
+      fill: transparent
+      stroke-width: 3
+      bold: true
+    }
+  }
+  quiet: {
+    shape: rectangle
+    style: {
+      stroke: "#8b949e"
+      font-color: "#57606a"
+      stroke-dash: 4
+      fill: transparent
+      stroke-width: 2
+    }
+  }
+}
+
+(** -> **)[*]: {
+  style.stroke: "#8b949e"
+  style.stroke-width: 2
+}
+
+pane: "agent pane\npane.read, recent_unwrapped" { class: node }
+rules: "rules\nprovider patterns,\nyour patterns and allowlist" { class: quiet }
+scan: "scan\nthe only place the value\never exists" { class: secret }
+finding: "finding\nrule, pane, masked preview,\nlength, keyed digest" { class: masked }
+store: "findings store\nkept until you acknowledge it" { class: node }
+badge: "sidebar badge\nredact_secret or redact_weak,\nwith a TTL" { class: node }
+toast: "toast\nonce per rule per pane" { class: node }
+ack: "you acknowledge\na, A, or redact --ack" { class: quiet }
+cleared: "badge cleared\nthe value is still in scrollback" { class: quiet }
+
+pane -> scan
+rules -> scan
+scan -> finding: "masked here;\nno value goes further"
+finding -> store
+store -> badge
+store -> toast
+ack -> store
+store -> cleared
