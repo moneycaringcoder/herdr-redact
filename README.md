@@ -64,9 +64,15 @@ that is running an agent, and scans it. What comes out of the scanner is already
 A finding stays until you acknowledge it. A secret that has scrolled out of view is still in that
 pane's scrollback and still exposed, so "it went away on its own" is not a state this plugin has.
 
-Badges are pushed with a TTL of roughly three refresh intervals, which is what makes the display
-self-healing: kill the watcher and herdr expires the badges within a cycle or two rather than leaving
-a stale warning on screen forever.
+Each cycle has a reading budget, because reading is one round trip per pane and a loaded server can
+take over a second for one of them. When the budget runs out the cycle stops, says how many panes it
+did not reach, and the next cycle **starts where this one stopped** — so a session larger than one
+budget is still covered in full, just over several cycles, and no pane is ever permanently unseen.
+
+Badges are pushed with a TTL of roughly three cycles' worth of wall-clock — the interval plus that
+reading budget — which is what makes the display self-healing: kill the watcher and herdr expires the
+badges rather than leaving a stale warning on screen forever. Sizing the TTL off the interval alone
+made the badge blink out between cycles on a large session, which is why it is not.
 
 ## What it looks like
 
@@ -85,26 +91,50 @@ the colour comes from your own config and a badge has to be readable before you 
 abbreviate once they get long (`1.2k`, `12k`), and a badge is never wider than six columns, so it
 cannot push the agent name off the row.
 
-The full picture lives in the **Redact: findings** overlay pane:
+The full picture lives in the **Redact: findings** overlay pane. This is a real capture, from a
+37-pane herdr session with three deliberately fake credentials printed into one shell pane:
 
 ```
 redact · findings
 
-1 unacknowledged and 1 acknowledged, from 4 panes scanned.
-2 panes skipped, because they are not running an agent; --all-panes widens the
-  scan.
+3 unacknowledged and 0 acknowledged, from 24 panes scanned.
+1 pane skipped: not running an agent, named in `ignore_panes`, or this pane.
+8 panes could not be read at all, so anything printed there is unexamined. The
+  notes at the end say why.
+This scan did not complete cleanly, so an empty result here does not mean there
+  was nothing there. The notes at the end say what went wrong.
 
-    id      rule                pane    preview    age
-  ⚠ a1b2c3  AWS access key ID   claude  AKIA…MPLE  1m
-  ✓ b2c3d4  API key assignment  w0:p3   sk-l…9ab2  2h
+    id      rule               pane    preview    age
+  ⚠ 3647e7  Slack token        w16:p5  xoxb…LEEX  41s
+  ⚠ b02e47  AWS access key ID  w16:p5  AKI…PLE    41s
+  ⚠ bd0fad  GitHub token       w16:p5  ghp_…LE01  41s
 
 legend
   ⚠  a provider credential, not acknowledged
   ⚑  a weak match, not acknowledged
-  ✓  acknowledged — the value is still in that scrollback
   age is how long ago the finding was first seen. The preview is masked: at most
   the first four and last four characters ever leave the scanner.
+
+notes
+  8 pane(s) were not read before this cycle's 30s budget ran out; the next cycle
+    starts where this one stopped, so they are read then
+
+The background watcher is off, so nothing is scanned between these runs —
+  `redact --enable` starts it.
 ```
+
+Two things in that capture are worth reading closely, because both are the plugin telling you
+something inconvenient rather than something flattering:
+
+- **`AKI…PLE`, not `AKIA…MPLE`.** The mask shows at most four characters at each end *and* never more
+  than about a third of the value, so a twenty-character key gets three, not four.
+- **Eight panes went unread, and the report says so twice.** That session was loaded enough that
+  single pane reads took over a second; the cycle stopped at its budget rather than running on. The
+  next cycle picks up where this one stopped, so nothing is permanently unseen — but a report that
+  quietly said "nothing found" for those eight panes would have been a lie.
+
+An acknowledged finding stays in the table, marked `✓` and sorted below the live ones, because the
+value is still sitting in that pane's scrollback.
 
 `a` acknowledges the selected finding, `A` acknowledges every one of them, `j`/`k` or the arrow keys
 move the selection, and `q` quits. The view reflows down to very narrow panes, and where a pane is
@@ -116,11 +146,19 @@ and clean says so in words; a cycle that hit a problem says the scan did not com
 lists what went wrong underneath. That distinction is the one thing in this plugin worth being
 pedantic about, because a clean report you cannot trust is worse than no report.
 
-> **Screenshot placeholder.** A capture from a live session belongs here, replacing this block:
-> the herdr sidebar with a `⚠ 2` badge beside an agent pane and a `⚑ 1` beside another, the
-> **Redact: findings** overlay open next to it showing at least one strong finding and one
-> acknowledged one, and every preview visibly masked. Save it as `docs/img/screenshot.png` and
-> reference it here.
+### Verified live
+
+Everything above was run against a live herdr 0.8.0 session rather than mocked up. What was observed,
+in order: a scratch shell pane was given three structurally valid but obviously fake credentials; a
+scan of the whole 37-pane session reported exactly those three and nothing else, from any of the
+other panes, over several runs; `pane.list` showed the badge token `redact_secret: "⚠ 3"` on the
+offending pane and on its workspace, stable across cycles; acknowledging one finding from a shell took
+the badge to `⚠ 2` within a cycle; acknowledging the rest cleared both badges entirely; and `redact
+--disable` swept the tokens and left no process behind.
+
+The precision claim was measured the same way. Before anything fake was printed, a scan of 26 live
+agent panes — real editors, real build output, real agent transcripts — reported **zero** findings and
+zero notes.
 
 ## Install
 
@@ -367,8 +405,9 @@ Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Str
 
 | Rule | Catches | Confidence |
 | --- | --- | --- |
-| `aws_access_key_id` | `AKIA`/`ASIA`/`AROA`… plus 16 base32 characters | strong |
+| `aws_access_key_id` | `AKIA` or `ASIA` plus 16 base32 characters | strong |
 | `aws_secret_access_key` | 40 base64 characters, but only next to the key name AWS itself uses | strong |
+| `aws_principal_id` | `AROA`, `AIDA`, `AGPA`, `ANPA`, `ANVA`, `AIPA`, `APKA` plus 16 | weak |
 | `github_token` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | strong |
 | `github_pat` | fine-grained `github_pat_…` | strong |
 | `anthropic_api_key` | `sk-ant-…` | strong |
@@ -398,6 +437,10 @@ Precision is the product, so several obvious candidates are left out on purpose:
 - **Twilio.** The `AC…`/`SK…` SIDs are identifiers rather than secrets, and the auth token is 32 bare
   hex characters — indistinguishable from a git object id.
 - **Cloudflare API tokens.** Forty characters of `[A-Za-z0-9_-]` with no prefix at all.
+- **AWS principal identifiers as credentials.** `AROA…`, `AIDA…` and friends are matched, but at
+  *weak* confidence and under their own rule name, because they are identifiers rather than secrets
+  and full-length ones appear in ordinary `aws sts get-caller-identity` output. Only `AKIA` and
+  `ASIA` — the prefixes that really are access keys — report as strong.
 - **Generic "high-entropy" strings.** A 32- or 40-character hex or base64 run with no surrounding
   context is a commit id, a checksum, a UUID, an image blob, or a minified bundle far more often than
   it is a key.

@@ -182,14 +182,14 @@ pub fn scan_cycle_with_panes(
     config: &Config,
     store: &mut Store,
 ) -> Result<(Report, Vec<PaneRef>)> {
-    scan_cycle_within(client, config, store, cycle_budget(config))
+    scan_cycle_within(client, config, store, config.cycle_budget())
 }
 
 /// [`scan_cycle_with_panes`] with an explicit reading budget.
 ///
 /// Exists so the round-robin can be tested in milliseconds rather than in the
-/// thirty seconds [`cycle_budget`] floors at. Production callers use the derived
-/// budget; nothing else should pass one.
+/// thirty seconds [`Config::cycle_budget`] floors at. Production callers use the
+/// derived budget; nothing else should pass one.
 pub fn scan_cycle_within(
     client: &mut Herdr,
     config: &Config,
@@ -334,18 +334,6 @@ pub fn scan_cycle_within(
     report.panes_unread = failed + unread;
     report.panes_truncated = truncated;
     Ok((report, panes))
-}
-
-/// How long one cycle may spend reading panes.
-///
-/// Two intervals, floored at half a minute so a one-second interval does not
-/// starve a large session, and ceilinged so a very long interval does not let a
-/// single wedged cycle run for an hour.
-fn cycle_budget(config: &Config) -> Duration {
-    config
-        .interval
-        .saturating_mul(2)
-        .clamp(Duration::from_secs(30), Duration::from_secs(120))
 }
 
 /// One cycle over a fresh connection, for `--once` and `--json`.

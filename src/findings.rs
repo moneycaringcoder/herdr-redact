@@ -275,8 +275,6 @@ impl Store {
     /// this run's in-memory state (the key, the notification limiter).
     ///
     /// Without this a daemon would hold a stale copy of the findings and its
-    /// next save would silently undo an acknowledgement the user made from a
-    /// shell. Returns whether anything was reloaded.
     /// Index into this cycle's pane list at which reading should start. See
     /// [`Store::scan_cursor`].
     pub fn scan_cursor(&self, len: usize) -> usize {
@@ -292,6 +290,9 @@ impl Store {
         self.scan_cursor = at;
     }
 
+    /// Re-reads the state file if another process has rewritten it since we last
+    /// touched it, so this run's next save cannot silently undo an
+    /// acknowledgement made from a shell. Returns whether anything was reloaded.
     pub fn reload_if_changed(&mut self, config: &Config) -> bool {
         let stamp = fs::read(&self.path)
             .ok()
@@ -345,10 +346,48 @@ impl Store {
         }
     }
 
+    /// Folds in acknowledgements another process has made since we last read the
+    /// file.
+    ///
+    /// [`Store::reload_if_changed`] runs at the *top* of a cycle, and a cycle on
+    /// a large session takes tens of seconds. An acknowledgement typed into a
+    /// shell during that window was written to the file, and then overwritten by
+    /// this run's save the moment the cycle finished — the badge came straight
+    /// back and the user's dismissal looked like it had done nothing. Observed
+    /// live, with the watcher running.
+    ///
+    /// Acknowledgement is monotonic within a run, so merging is a union: if
+    /// either side has it acknowledged, it is acknowledged. `--forget` is
+    /// deliberately *not* merged — it empties the file, and a watcher that is
+    /// still looking at the same screen will report what is still on it, which
+    /// is what "forget" means as distinct from "acknowledge".
+    fn adopt_external_acknowledgements(&mut self) {
+        let stamp = fs::read(&self.path)
+            .ok()
+            .map(|bytes| crate::model::digest(&STAMP_KEY, &String::from_utf8_lossy(&bytes)));
+        if stamp == self.stamp.get() {
+            return;
+        }
+        let mut notes = Vec::new();
+        let (theirs, _) = read_state(&self.path, &mut notes);
+        for other in theirs {
+            if !other.acknowledged {
+                continue;
+            }
+            if let Some(ours) = self.findings.iter_mut().find(|f| f.id == other.id) {
+                ours.acknowledged = true;
+            }
+        }
+        // Deliberately silent about read problems here: `reload_if_changed` at
+        // the top of the next cycle reports them, and a save is not the place to
+        // start narrating.
+    }
+
     /// Writes the store out atomically: a temp file in the same directory, then
     /// a rename. A daemon killed mid-write cannot leave a half-written file that
     /// loses every acknowledgement.
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&mut self) -> Result<()> {
+        self.adopt_external_acknowledgements();
         let dir = self
             .path
             .parent()

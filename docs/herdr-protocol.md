@@ -77,8 +77,42 @@ every pane and every source** in the live capture, including panes whose
 
 So `PaneReadResult.revision` **cannot** be used to skip an unchanged pane. A
 scanner that did would never scan anything and would report a permanently clean
-session. Change detection has to come from the text itself (this plugin hashes
-it) or from `PaneInfo.revision` in the snapshot.
+session. Change detection has to come from the text itself; this plugin hashes
+it.
+
+### Trap 4 — `PaneInfo.revision` is not an output counter either
+
+The obvious repair for trap 3 is to use the *other* revision — the one on
+`PaneInfo`, from `pane.list` and `session.snapshot`, which unlike the read
+result's is a real moving counter (observed at 6183 on a busy pane). Reading a
+pane only when its snapshot revision has moved would turn a thirty-round-trip
+cycle into two or three.
+
+It does not work. Verified live: a pane at revision 6 was sent
+`echo revision-probe\n` through `pane.send_text`, produced output, and had its
+screen change — and the revision was still 6 two seconds later, and still 6
+after that.
+
+Whatever `PaneInfo.revision` counts, it is not "this pane produced output". Do
+not build change detection on it. This plugin hashes the text it read and
+compares the hash, which costs a round trip per pane per cycle and is the
+reason the cycle needs a time budget at all.
+
+### Read latency is per-pane and can be seconds
+
+Measured on a live session of 37 panes with about twenty agents running:
+`session.snapshot` answered in 0.02 s, and `pane.read` answered in **0.0 s for
+most panes but 0.7–1.7 s for some** — consistently the ones in split layouts
+with small viewports, and not correlated with how much text came back.
+
+At a second a pane, thirty panes is half a minute. Two consequences for anything
+that polls every pane:
+
+1. Give the whole cycle a deadline, or a slow server turns "scan every five
+   seconds" into a cycle that never returns and a badge that is never pushed.
+2. Resume where the last cycle stopped. A deadline with no rotation reads the
+   first few panes for ever and never reaches the rest, which is a permanent
+   blind spot dressed up as a clean session.
 
 ### Other observed behaviour
 

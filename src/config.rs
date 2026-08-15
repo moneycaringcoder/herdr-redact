@@ -26,7 +26,10 @@ pub const MAX_LINES: u32 = 20_000;
 pub const DEFAULT_MAX_FINDINGS: usize = 500;
 
 const MAX_TTL_MS: u64 = 86_400_000;
-const _: () = assert!(MAX_INTERVAL_SECONDS.saturating_mul(3_000) <= MAX_TTL_MS);
+/// The derived TTL is three times the interval plus the reading budget, and the
+/// budget is ceilinged at 120 seconds. Keeps `ttl_ms`'s clamp from ever being
+/// the thing that saves us.
+const _: () = assert!((MAX_INTERVAL_SECONDS + 120).saturating_mul(3_000) <= MAX_TTL_MS);
 
 /// One user-supplied rule from the config file.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -97,10 +100,38 @@ impl Default for Config {
 }
 
 impl Config {
-    /// TTL for a badge push: three refresh cycles, so one missed cycle does not
+    /// How long one cycle may spend reading panes.
+    ///
+    /// Reading is one round trip per pane, and on a live 37-pane session some
+    /// reads took 1.7 seconds each — thirty seconds for a sweep, against a
+    /// five-second interval. Without a deadline the cycle simply never returns
+    /// and the badge is never pushed.
+    ///
+    /// Two intervals, floored at half a minute so a one-second interval does not
+    /// starve a large session, and ceilinged so a single wedged cycle cannot run
+    /// for an hour.
+    pub fn cycle_budget(&self) -> Duration {
+        self.interval
+            .saturating_mul(2)
+            .clamp(Duration::from_secs(30), Duration::from_secs(120))
+    }
+
+    /// TTL for a badge push: three cycles' worth, so one missed cycle does not
     /// blink the badge out, clamped to herdr's ceiling.
+    ///
+    /// Derived from the interval **plus the reading budget**, not the interval
+    /// alone. A cycle costs its reading time and then sleeps for the interval,
+    /// so on a large session the gap between two pushes is dominated by the
+    /// reading. Sizing the TTL off the interval alone was observed live to
+    /// expire the badge between cycles: it appeared, then vanished, then
+    /// appeared again — which reads as a bug in the plugin, and is one.
+    ///
+    /// The cost of the wider window is that a SIGKILLed daemon leaves its badge
+    /// standing for up to that long. A stale badge that self-heals is a much
+    /// smaller problem than a badge that flickers.
     pub fn ttl_ms(&self) -> u64 {
         self.interval
+            .saturating_add(self.cycle_budget())
             .as_secs()
             .saturating_mul(3_000)
             .clamp(1, MAX_TTL_MS)

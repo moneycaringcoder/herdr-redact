@@ -586,3 +586,69 @@ fn the_store_writes_where_the_config_module_says_it_should() {
     assert_eq!(config::key_file(), state.path.join("digest.key"));
     drop(state);
 }
+
+/// The regression test for a bug the live run found and no unit test could:
+/// an acknowledgement typed into a shell was silently undone by the watcher.
+///
+/// `reload_if_changed` runs at the *top* of a cycle, and a cycle on a large
+/// session takes tens of seconds. An acknowledgement made inside that window was
+/// written to the file and then overwritten when the cycle's own save landed.
+/// The badge came straight back, and the user's dismissal looked like it had
+/// simply not worked.
+#[test]
+fn an_acknowledgement_made_by_another_process_mid_cycle_is_not_clobbered() {
+    let state = StateDir::new();
+    let config = config(500);
+
+    // The watcher: loads, sees a finding, and is now part-way through a long
+    // cycle with the store held in memory.
+    let mut watcher = Store::load(&config);
+    watcher.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+    watcher.save().expect("save");
+    let id = only(&watcher.findings()).id.clone();
+
+    // The user, in a shell, part-way through that cycle.
+    let mut shell = Store::load(&config);
+    assert_eq!(shell.acknowledge(&id), 1);
+    shell.save().expect("save");
+
+    // The watcher's cycle finishes and it saves its own, older, view.
+    watcher.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 160);
+    watcher.save().expect("save");
+
+    let after = Store::load(&config);
+    assert!(
+        only(&after.findings()).acknowledged,
+        "the watcher's save undid an acknowledgement made from a shell"
+    );
+    // And the watcher's own copy agrees, so the next badge push clears rather
+    // than re-lighting it.
+    assert!(only(&watcher.findings()).acknowledged);
+    drop(state);
+}
+
+/// The other half: a save must not resurrect an acknowledgement that was never
+/// made, nor invent findings from a file it half-read.
+#[test]
+fn adopting_external_state_only_ever_adds_acknowledgement() {
+    let state = StateDir::new();
+    let config = config(500);
+
+    let mut watcher = Store::load(&config);
+    watcher.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+    watcher.save().expect("save");
+
+    // Another process writes a file with a *different* finding in it,
+    // unacknowledged. Nothing about that should change what we hold.
+    let mut other = Store::load(&config);
+    other.observe(&pane("wE:p3"), &[a_match("github_token", 9)], 120);
+    other.save().expect("save");
+
+    watcher.save().expect("save");
+    let after = Store::load(&config);
+    assert!(
+        after.findings().iter().all(|f| !f.acknowledged),
+        "an acknowledgement appeared from nowhere"
+    );
+    drop(state);
+}
