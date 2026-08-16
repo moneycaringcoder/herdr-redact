@@ -164,6 +164,18 @@ The precision claim was measured the same way. Before anything fake was printed,
 agent panes — real editors, real build output, real agent transcripts — reported **zero** findings and
 zero notes.
 
+Then the two hardest false positives were printed into the same pane as the fake credentials:
+
+```
+GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305
+CACHE_KEY=Linux-node-8f14e45fceea167a5a36dedd4bea2543
+```
+
+The first is the public signing-key fingerprint every official `python:3.x` image prints on startup;
+the second is what a CI runner echoes on every job. Both look exactly like a secret assignment and
+neither is one. The same scan that reported the three planted credentials reported **neither of
+them**.
+
 ## Install
 
 ```sh
