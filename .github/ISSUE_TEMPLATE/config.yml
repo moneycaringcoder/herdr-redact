@@ -11,5 +11,5 @@ contact_links:
       Report privately rather than in a public issue, and do not paste the
       secret.
   - name: herdr itself
-    url: https://github.com/SuperCodeAgents/herdr-terminal
+    url: https://github.com/herdrdev/herdr
     about: For bugs in herdr rather than in this plugin.
