@@ -426,6 +426,7 @@ Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Str
 | `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
 | `sendgrid_api_key` | `SG.…` | strong |
 | `huggingface_token` | `hf_…` | strong |
+| `age_secret_key` | `AGE-SECRET-KEY-1…`, the private half only — `age1…` is a public key and is ignored | strong |
 | `jwt` | three base64url segments **whose header really decodes to JSON with `alg`** | strong |
 | `private_key_block` | `-----BEGIN … PRIVATE KEY-----`, including one cut off by the line budget | strong |
 | `url_credentials` | a password embedded in a URL, `scheme://user:pass@host` | weak |
@@ -455,9 +456,16 @@ Precision is the product, so several obvious candidates are left out on purpose:
 
 The `.env`-style assignment rule is the one broad heuristic that does ship, which is why it reports at
 weak confidence and gets its own badge colour. It is anchored to the start of a line, insists the name
-looks like a secret (`*_TOKEN`, `*_SECRET`, `*_KEY`, `PASSWORD`) and not like a red herring
-(`PUBLIC_KEY`, `TOKEN_FILE`, `TEST_TOKEN`), and drops values that are obviously placeholders
+looks like a secret and not like a red herring, and drops values that are obviously placeholders
 (`changeme`, `true`, `localhost`, `xxx`).
+
+The name test is deliberately narrow: `*_TOKEN`, `*_SECRET`, `PASSWORD`, `*_PASSWORD`,
+`*_PASSPHRASE`, `*_CREDENTIALS`, and the qualified key names `*_API_KEY`, `*_SECRET_KEY`,
+`*_PRIVATE_KEY`, `*_ACCESS_KEY`. A bare `*_KEY` does **not** qualify, because `GPG_KEY` is printed by
+every official `python:3.x` image, `CACHE_KEY` by every CI runner, and `routing_key`,
+`partition_key`, `idempotency_key`, `app_key` and `bucket_key` by ordinary application logs. Losing
+`SIGNING_KEY` and `ENCRYPTION_KEY` to that rule is the price, and it is the right way round: a rule
+that fires on a `python:3.x` startup banner would be uninstalled by the end of the day.
 
 Add what your team uses through `patterns`, and silence what your repository prints through
 `allowlist`. Both are ordinary regexes.

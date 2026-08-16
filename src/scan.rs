@@ -26,6 +26,17 @@
 //!   when the value could plausibly *be* a credential — see
 //!   `plausible_secret_value`, which is most of the work of that rule.
 //!
+//! # The reported span is the validated span
+//!
+//! A rule whose value has to be trimmed before it can be validated — the
+//! assignment heuristic captures to end of line, so it picks up trailing
+//! whitespace and a trailing comma — reports the *trimmed* span, not the raw
+//! capture. Validating one string and reporting another would mean the preview,
+//! the length and the digest all describe text the check never looked at, and
+//! the digest is the identity of a finding: `TOKEN=abc` and `TOKEN=abc,` would
+//! be two findings for one secret, so acknowledging one would leave the other
+//! lit. See `narrow_span`.
+//!
 //! # Masking policy
 //!
 //! [`mask`] shows at most the first four and the last four characters, and never
@@ -48,10 +59,16 @@ use crate::config::Config;
 use crate::model::{digest, Confidence, DigestKey, Match};
 use crate::Result;
 
-/// Ceiling on matches from one scan. A pane that produces more than this is
-/// already a catastrophe rather than a finding, and the cap keeps overlap
-/// resolution from going quadratic on adversarial input.
-const MAX_MATCHES: usize = 2_000;
+/// Ceiling on matches from one *rule* in one scan. A pane that produces more
+/// than this from a single pattern is already a catastrophe rather than a
+/// finding, and the cap keeps the candidate list bounded on adversarial input.
+///
+/// Per-rule rather than per-scan on purpose. A single ceiling across all rules
+/// meant a flood of weak matches from an early rule could stop every later rule
+/// from running at all, so 2 000 lines of `AROA…` could hide a GitHub token
+/// completely. Every rule now gets its own budget, and a rule that exhausts one
+/// says so in [`Scan::notes`] instead of truncating in silence.
+const MAX_MATCHES_PER_RULE: usize = 500;
 
 /// Compiled size ceiling for a user-supplied regex, so a pathological pattern
 /// cannot eat memory at compile time.
@@ -80,6 +97,10 @@ struct Rule {
     /// Reject a match whose neighbouring character could make it part of a
     /// longer token — the base64-blob defence.
     standalone: bool,
+    /// Report the trimmed value rather than the raw capture, for rules whose
+    /// value is validated by `plausible_secret_value` — which trims before it
+    /// looks. See `narrow_span`.
+    narrow_value: bool,
     check: Option<Check>,
 }
 
@@ -92,6 +113,7 @@ impl Rule {
             regex: Regex::new(pattern).expect("built-in pattern is valid"),
             groups: vec![0],
             standalone: false,
+            narrow_value: false,
             check: None,
         }
     }
@@ -103,6 +125,11 @@ impl Rule {
 
     fn standalone(mut self) -> Self {
         self.standalone = true;
+        self
+    }
+
+    fn narrowed(mut self) -> Self {
+        self.narrow_value = true;
         self
     }
 
@@ -167,6 +194,7 @@ impl Rules {
                 regex,
                 groups: vec![0],
                 standalone: false,
+                narrow_value: false,
                 check: None,
             });
         }
@@ -407,6 +435,19 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             r"\bhf_[A-Za-z0-9]{34,}",
         )
         .standalone(),
+        // The private half of an age keypair. The public half — `age1…`, the
+        // recipient — is printed by `age-keygen` next to this one, appears in
+        // every `.sops.yaml` and in every README that explains age, and is not
+        // a secret; only this prefix is. Bech32, so the body excludes `1`, `B`,
+        // `I` and `O`, and 58 characters is exactly what a 32-byte key encodes
+        // to: the shape is rigid enough for `Strong`.
+        Rule::new(
+            "age_secret_key",
+            "age secret key",
+            Confidence::Strong,
+            r"\bAGE-SECRET-KEY-1[02-9A-HJ-NP-Z]{58}\b",
+        )
+        .standalone(),
         // Weak, not Strong: `postgres://user:pass@host/db` is what every README
         // and every connection-string example in the world looks like. The
         // password still has to survive the placeholder filter, which is what
@@ -418,6 +459,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             r"\b[a-zA-Z][a-zA-Z0-9+.-]{1,15}://[^\s/:@]{1,64}:([^\s/:@]{1,128})@",
         )
         .groups(&[1])
+        .narrowed()
         .check(is_secret_capture),
         // Agents print `curl -H "Authorization: Bearer …"` constantly, which is
         // the motivating example in the crate docs.
@@ -428,6 +470,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             r"(?i)authorization[ \t]*:[ \t]*bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})",
         )
         .groups(&[1])
+        .narrowed()
         .check(is_secret_capture),
     ];
 
@@ -443,6 +486,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
                 r#"(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))"#,
             )
             .groups(&[2, 3, 4])
+            .narrowed()
             .check(is_secret_assignment),
         );
         // `name: value` (YAML) and `"name": "value"` (JSON). The mandatory space
@@ -455,6 +499,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
                 r#"(?m)^[ \t-]*"?([A-Za-z_][A-Za-z0-9_.-]*)"?[ \t]*:[ \t]+(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))"#,
             )
             .groups(&[2, 3, 4])
+            .narrowed()
             .check(is_secret_assignment),
         );
     }
@@ -556,9 +601,32 @@ const SECRET_SEGMENTS: &[&str] = &[
     "CREDENTIAL",
     "CREDENTIALS",
     "APIKEY",
+    "APIKEYS",
     "PRIVATEKEY",
+    "SECRETKEY",
+    "ACCESSKEY",
     "PAT",
 ];
+
+/// Segments that make a trailing `KEY` a credential: `API_KEY`, `SECRET_KEY`,
+/// `PRIVATE_KEY`, `ACCESS_KEY`, `AUTH_KEY`, `MASTER_KEY`.
+///
+/// A bare `*_KEY` is deliberately **not** enough. "Key" is the most overloaded
+/// word in a terminal, and every one of these is ordinary output that used to
+/// be reported as a credential: `GPG_KEY=…` (a *public* fingerprint, printed by
+/// `env` in every official `python:3.x` image), `CACHE_KEY=…` (GitHub Actions,
+/// CircleCI), `cache_key:`, `routing_key:` (RabbitMQ, Celery),
+/// `partition_key:` (Kafka, DynamoDB), `idempotency_key:` (every payments SDK),
+/// `app_key:`, `bucket_key:`, and `age_key: age1…` — which is the *public* half
+/// of an age keypair, the one case where warning about the wrong half is worse
+/// than saying nothing.
+///
+/// The price is that `SIGNING_KEY=…` and `ENCRYPTION_KEY=…` no longer report
+/// from their name alone. That is deliberate: this is a weak heuristic, both of
+/// those names are also used for public verification keys and for key *ids*,
+/// and a scanner that cries wolf gets uninstalled and then protects nothing.
+/// Please do not "fix" it back — add the name to your own `patterns` instead.
+const KEY_QUALIFIERS: &[&str] = &["API", "SECRET", "PRIVATE", "ACCESS", "AUTH", "MASTER"];
 
 /// Segments that disqualify a name outright. `PUBLIC_KEY` is not a secret,
 /// `TOKEN_FILE` is a path to one, and `TEST_TOKEN` is somebody's fixture.
@@ -662,8 +730,12 @@ fn secretish_name(name: &str) -> bool {
     if segments.iter().any(|s| SECRET_SEGMENTS.contains(s)) {
         return true;
     }
-    // `API_KEY`, `ACCESS_KEY`, `SIGNING_KEY` — but never a bare `KEY`.
-    segments.len() > 1 && segments.last().copied() == Some("KEY")
+    // `API_KEY`, `ACCESS_KEY` — but never a bare `*_KEY`, which is most of
+    // what a terminal calls a key. See `KEY_QUALIFIERS`.
+    let [.., qualifier, "KEY" | "KEYS"] = segments.as_slice() else {
+        return false;
+    };
+    KEY_QUALIFIERS.contains(qualifier)
 }
 
 /// Could this *value* plausibly be a credential?
@@ -672,7 +744,7 @@ fn secretish_name(name: &str) -> bool {
 /// this errs hard towards "no". Every rejection below corresponds to something
 /// that shows up in real terminal output all day.
 fn plausible_secret_value(value: &str) -> bool {
-    let value = unquote(value.trim().trim_end_matches([',', ';']).trim());
+    let value = narrow(value);
 
     if value.len() < MIN_VALUE_LEN || value.len() > MAX_VALUE_LEN {
         return false;
@@ -724,17 +796,44 @@ fn plausible_secret_value(value: &str) -> bool {
     value.bytes().any(|b| b.is_ascii_digit()) || value.len() >= 16
 }
 
-/// Strips one matching pair of surrounding quotes.
-fn unquote(value: &str) -> &str {
-    for quote in ['"', '\''] {
-        if let Some(inner) = value
-            .strip_prefix(quote)
-            .and_then(|v| v.strip_suffix(quote))
-        {
-            return inner;
+/// The part of a captured value that is actually the value: surrounding
+/// whitespace, one trailing `,` or `;`, and one matching pair of surrounding
+/// quotes removed.
+///
+/// Returned as byte offsets into `raw` so that the *span* the scanner reports
+/// can be narrowed to exactly the text the plausibility check validated —
+/// see the module docs. Only ASCII bytes are stepped over, so both offsets are
+/// always on a character boundary.
+fn narrow_span(raw: &str) -> (usize, usize) {
+    let bytes = raw.as_bytes();
+    let mut start = 0;
+    let mut end = raw.len();
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    // A trailing separator goes too: the same value in a JSON or YAML list and
+    // on its own has to be one finding, not two.
+    while end > start
+        && (bytes[end - 1].is_ascii_whitespace() || matches!(bytes[end - 1], b',' | b';'))
+    {
+        end -= 1;
+    }
+
+    if end - start >= 2 {
+        let quote = bytes[start];
+        if matches!(quote, b'"' | b'\'') && bytes[end - 1] == quote {
+            start += 1;
+            end -= 1;
         }
     }
-    value
+    (start, end)
+}
+
+/// `raw` narrowed to the value itself. See [`narrow_span`].
+fn narrow(raw: &str) -> &str {
+    let (start, end) = narrow_span(raw);
+    &raw[start..end]
 }
 
 // ---------------------------------------------------------------------------
@@ -809,13 +908,37 @@ struct Candidate {
 ///
 /// When two rules match overlapping spans the stronger one wins, and on a tie
 /// the longer one does — a bearer header holding a JWT is one finding, not two.
+///
+/// This is [`scan_reporting`] with the notes dropped. A caller that shows the
+/// user a report should call that instead, so a scan that stopped early can say
+/// so rather than looking like a quiet one.
 pub fn scan(text: &str, rules: &Rules, key: &DigestKey) -> Vec<Match> {
+    scan_reporting(text, rules, key).matches
+}
+
+/// What one scan found, and anything the user should know about the scan
+/// itself.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Scan {
+    /// The findings, in the order they appear in the text.
+    pub matches: Vec<Match>,
+    /// Things that happened to the *scan*, in the same voice as
+    /// [`Rules::notes`]: today, the rules that hit their per-rule ceiling and
+    /// therefore stopped looking. Never contains a value. Empty on a scan that
+    /// ran to completion, which is nearly all of them.
+    pub notes: Vec<String>,
+}
+
+/// [`scan`], plus what the scan could not finish. See [`Scan`].
+pub fn scan_reporting(text: &str, rules: &Rules, key: &DigestKey) -> Scan {
     if text.is_empty() || rules.rules.is_empty() {
-        return Vec::new();
+        return Scan::default();
     }
 
     let mut candidates: Vec<Candidate> = Vec::new();
-    'rules: for (index, rule) in rules.rules.iter().enumerate() {
+    let mut truncated: Vec<&str> = Vec::new();
+    for (index, rule) in rules.rules.iter().enumerate() {
+        let mut found_here = 0usize;
         for caps in rule.regex.captures_iter(text) {
             let Some(found) = rule.value(&caps) else {
                 continue;
@@ -826,7 +949,17 @@ pub fn scan(text: &str, rules: &Rules, key: &DigestKey) -> Vec<Match> {
             if found.is_empty() {
                 continue;
             }
-            if rule.standalone && !standalone(text, found.start(), found.end()) {
+            // The span the check validated is the span that gets reported.
+            let (mut start, mut end) = (found.start(), found.end());
+            if rule.narrow_value {
+                let (inner_start, inner_end) = narrow_span(found.as_str());
+                end = start + inner_end;
+                start += inner_start;
+                if start == end {
+                    continue;
+                }
+            }
+            if rule.standalone && !standalone(text, start, end) {
                 continue;
             }
             if let Some(check) = rule.check {
@@ -836,12 +969,18 @@ pub fn scan(text: &str, rules: &Rules, key: &DigestKey) -> Vec<Match> {
             }
             candidates.push(Candidate {
                 rule: index,
-                start: found.start(),
-                end: found.end(),
+                start,
+                end,
                 confidence: rule.confidence,
             });
-            if candidates.len() >= MAX_MATCHES {
-                break 'rules;
+            found_here += 1;
+            // Only this rule stops. A flood of weak matches must not be able to
+            // starve a strong rule that has not run yet.
+            if found_here >= MAX_MATCHES_PER_RULE {
+                if !truncated.contains(&rule.name.as_str()) {
+                    truncated.push(&rule.name);
+                }
+                break;
             }
         }
     }
@@ -868,18 +1007,21 @@ pub fn scan(text: &str, rules: &Rules, key: &DigestKey) -> Vec<Match> {
             .then(a.start.cmp(&b.start))
             .then(a.rule.cmp(&b.rule))
     });
+    // `kept` is disjoint and stays sorted by start, so only the two neighbours
+    // of the insertion point can overlap a new candidate. That keeps the sweep
+    // near-linear however many candidates the rules produced.
     let mut kept: Vec<Candidate> = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let overlaps = kept
-            .iter()
-            .any(|other| candidate.start < other.end && other.start < candidate.end);
-        if !overlaps {
-            kept.push(candidate);
+        let at = kept.partition_point(|other| other.start <= candidate.start);
+        let overlaps_before = at > 0 && kept[at - 1].end > candidate.start;
+        let overlaps_after = at < kept.len() && kept[at].start < candidate.end;
+        if !overlaps_before && !overlaps_after {
+            kept.insert(at, candidate);
         }
     }
-    kept.sort_by_key(|candidate| (candidate.start, candidate.end));
 
-    kept.into_iter()
+    let matches = kept
+        .into_iter()
         .map(|candidate| {
             let value = &text[candidate.start..candidate.end];
             let rule = &rules.rules[candidate.rule];
@@ -893,7 +1035,19 @@ pub fn scan(text: &str, rules: &Rules, key: &DigestKey) -> Vec<Match> {
                 digest: digest(key, value),
             }
         })
-        .collect()
+        .collect();
+
+    let notes = truncated
+        .into_iter()
+        .map(|name| {
+            format!(
+                "the `{name}` rule stopped after {MAX_MATCHES_PER_RULE} matches in one pane, so \
+                 anything it would have found beyond that is missing; every other rule still ran"
+            )
+        })
+        .collect();
+
+    Scan { matches, notes }
 }
 
 /// Masked rendering of a value: at most the first four and the last four

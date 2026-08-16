@@ -147,9 +147,13 @@ fn a_preview_never_shows_more_than_four_characters_at_either_end() {
             shown <= 8,
             "mask({value:?}) shows {shown} characters: {preview:?}"
         );
+        // The documented policy is a third, and the test used to assert two
+        // thirds — a regression that doubled the number of characters kept would
+        // have passed it. One extra character of slack, because `k = min(4,
+        // len/6)` doubled is at most 8 and a 12-character value is allowed 4.
         assert!(
-            shown * 3 <= chars.len().max(1) * 2,
-            "mask({value:?}) shows {shown} of {} characters, which is over two thirds: {preview:?}",
+            shown * 3 <= chars.len().max(1) + 3,
+            "mask({value:?}) shows {shown} of {} characters, which is over a third: {preview:?}",
             chars.len()
         );
         assert_ne!(&preview, value, "mask({value:?}) is the value itself");
@@ -359,5 +363,83 @@ fn the_digest_is_keyed_and_is_not_the_value() {
         let b = redact::model::digest(&[1u8; 16], value);
         assert_ne!(a, b, "the digest ignores its key for {value:?}");
         assert_clean("digest", &format!("{a:x}{b:x}"));
+    }
+}
+
+/// The toast body, asserted directly.
+///
+/// The review pointed out that this file's module doc claimed to cover it while
+/// nothing in the file exercised it. A toast is the one output the user sees and
+/// the suite does not: it is a hand-built string, it goes to herdr's
+/// notification surface, and nobody re-reads it afterwards.
+#[test]
+fn a_toast_body_carries_no_value() {
+    let dir = sandbox("toast");
+    let _guard = env_lock();
+    let report = report_from_vectors(&dir);
+    assert!(!report.findings.is_empty());
+
+    for finding in &report.findings {
+        let (title, body) = redact::daemon::toast(finding);
+        assert_clean("a toast title", &title);
+        assert_clean("a toast body", &body);
+        // And it has to be useful: the id in it is the one `--ack` takes.
+        assert!(
+            body.contains(finding.short_id()),
+            "the toast does not say how to dismiss it: {body}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A user-supplied rule reports the whole match rather than a capture group, so
+/// it is a different code path through `mask` than any built-in with groups.
+/// Nothing in this file went through it before.
+#[test]
+fn a_user_supplied_rule_masks_its_value_like_any_other() {
+    let _guard = env_lock();
+    let config = Config {
+        patterns: vec![
+            redact::config::CustomPattern {
+                name: "internal_token".into(),
+                // Matches the whole thing, no capture group.
+                regex: r"INT-[A-Za-z0-9]{24}".into(),
+                label: Some("Internal service token".into()),
+                strong: true,
+            },
+            redact::config::CustomPattern {
+                name: "internal_weak".into(),
+                regex: r"WEAK-[A-Za-z0-9]{10}".into(),
+                label: None,
+                strong: false,
+            },
+        ],
+        ..Config::default()
+    };
+    let rules = Rules::compile(&config).expect("the patterns compile");
+
+    let value = "INT-EXAMPLEEXAMPLEEXAMPLEEXA";
+    let weak = "WEAK-EXAMPLE123";
+    let text = format!("$ deploy\nusing {value}\nfallback {weak}\n");
+    let matches = scan::scan(&text, &rules, &[3u8; 16]);
+
+    let found: Vec<&str> = matches.iter().map(|m| m.pattern.as_str()).collect();
+    assert!(
+        found.contains(&"internal_token") && found.contains(&"internal_weak"),
+        "the user's own rules did not fire: {found:?}"
+    );
+
+    for found in &matches {
+        assert_ne!(found.preview, value, "a user rule echoed its whole match");
+        assert!(
+            !found.preview.contains(value) && !found.preview.contains(weak),
+            "a user rule's preview carries the value: {:?}",
+            found.preview
+        );
+        assert!(
+            !format!("{found:?}").contains(value),
+            "a user rule's Debug carries the value"
+        );
     }
 }

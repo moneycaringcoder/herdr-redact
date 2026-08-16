@@ -318,8 +318,15 @@ pub fn scan_cycle_within(
         // scan and nothing else — the pane's existing findings stay exactly
         // where they are.
         if store.pane_text_changed(&pane.pane_id, &text.text) {
-            let matches = scan::scan(&text.text, &rules, store.key());
-            store.observe(pane, &matches, now);
+            // `scan_reporting` rather than `scan`: a rule that hit its ceiling
+            // stopped looking, and a scan that stopped looking must be able to
+            // say so. Silence there would mean a flood of weak matches in one
+            // pane could hide a real key with nothing to show for it.
+            let scanned = scan::scan_reporting(&text.text, &rules, store.key());
+            for note in scanned.notes {
+                notes.push(format!("pane {}: {note}", pane.pane_id));
+            }
+            store.observe(pane, &scanned.matches, now);
         }
     }
 
@@ -401,22 +408,35 @@ fn notify_new(client: &mut Herdr, config: &Config, store: &mut Store) {
         if !store.claim_notification(&finding) {
             continue;
         }
-        // A toast body is the single easiest place to leak a credential, so
-        // this line is deliberate: the rule, the pane, the masked preview and
-        // the length. `Finding` has no field that could carry the value.
-        let title = format!("redact: {} in {}", finding.label, finding.pane_label);
-        let body = format!(
+        let (title, body) = toast(&finding);
+        if let Err(err) = client.notify(&title, &body) {
+            eprintln!("redact: notification failed: {err}");
+        }
+    }
+}
+
+/// Title and body of the toast for one finding.
+///
+/// A toast body is the single easiest place in the whole plugin to leak a
+/// credential: it is a string built by hand, it goes somewhere the user can see
+/// but the test suite cannot, and it is the one output nobody re-reads. So it is
+/// a named, public function rather than an inline `format!` — `tests/never_leaks.rs`
+/// asserts against it directly.
+///
+/// Deliberately: the rule, the pane, the masked preview, the length, and the id
+/// to dismiss it with. `Finding` has no field that could carry the value.
+pub fn toast(finding: &crate::model::Finding) -> (String, String) {
+    (
+        format!("redact: {} in {}", finding.label, finding.pane_label),
+        format!(
             "{} in {}: {} ({} chars). Dismiss with `redact --ack {}`.",
             finding.pattern,
             finding.pane_label,
             finding.preview,
             finding.value_len,
             finding.short_id()
-        );
-        if let Err(err) = client.notify(&title, &body) {
-            eprintln!("redact: notification failed: {err}");
-        }
-    }
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------

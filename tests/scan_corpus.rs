@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use redact::config::{Config, CustomPattern};
 use redact::model::{digest, Confidence, DigestKey};
-use redact::scan::{mask, scan, Rules};
+use redact::scan::{mask, scan, scan_reporting, Rules};
 
 const KEY: DigestKey = [
     0x5a, 0x11, 0x9c, 0x03, 0x7e, 0xd2, 0x48, 0x6b, 0x91, 0x0f, 0xa4, 0x33, 0xc8, 0x27, 0x5e, 0xe1,
@@ -179,6 +179,15 @@ const POSITIVE: &[Vector] = &[
         value: "hf_0123456789abcdefghijklmnopqrstuvwx",
         preview: "hf_0\u{2026}uvwx",
     },
+    // The private half of an age keypair. Fake: the body is the bech32 charset
+    // written out twice, which no `age-keygen` ever produced.
+    Vector {
+        rule: "age_secret_key",
+        confidence: Confidence::Strong,
+        text: "AGE-SECRET-KEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE",
+        value: "AGE-SECRET-KEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE",
+        preview: "AGE-\u{2026}KHCE",
+    },
     Vector {
         rule: "url_credentials",
         confidence: Confidence::Weak,
@@ -305,6 +314,32 @@ token: refreshed successfully
 secret: null
 password: not set
 hash=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3
+
+# "key" is the most overloaded word in a terminal. Every line in this block is
+# ordinary output, and every one of them used to be reported as a credential.
+# printed by `env` in every official python:3.x image — a *public* fingerprint
+GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305
+# GitHub Actions and CircleCI, on every cache hit
+CACHE_KEY=Linux-node-8f14e45fceea167a5a36dedd4bea2543
+# any CI config echoed back
+  cache_key: posts/index-20260115
+# RabbitMQ, Celery
+routing_key: orders.created.v2
+# Kafka, DynamoDB
+partition_key: orders-2026-01-15
+# every payments SDK log line
+idempotency_key: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
+# Pusher, and half the Laravel apps in the world
+  app_key: frontend-v2
+# S3
+bucket_key: prod/state/v1
+# the PUBLIC half of an age keypair; the private half is AGE-SECRET-KEY-1…
+age_key: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+# a service logging its own request headers
+X-Request-Key: 5f2b8c1d9e4a7061
+# also a key id or a public verification key as often as it is a secret
+signing_key: rotated-2026-01
+
 Authorization: Bearer $TOKEN
 Authorization: Bearer <token>
 Authorization: Bearer YOUR_API_KEY_HERE
@@ -539,6 +574,100 @@ fn aws_principal_ids_report_as_weak_identifiers_not_as_keys() {
     }
 }
 
+/// The `*_key` names that are not credentials, kept here as well as in the
+/// negative corpus because the reason each one matters is worth reading.
+///
+/// A bare `*_KEY` is not enough to report on. "Key" is what a terminal calls a
+/// cache key, a routing key, a partition key, an idempotency key and a public
+/// fingerprint, and every one of these lines is output somebody sees daily.
+#[test]
+fn an_ordinary_key_named_assignment_is_not_a_credential() {
+    let rules = builtin();
+    for text in [
+        // `env` in every official python:3.x image. The value is a *public* GPG
+        // fingerprint, published so signatures can be verified.
+        "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+        // GitHub Actions, CircleCI.
+        "CACHE_KEY=Linux-node-8f14e45fceea167a5a36dedd4bea2543",
+        "  cache_key: posts/index-20260115",
+        // RabbitMQ, Celery.
+        "routing_key: orders.created.v2",
+        // Kafka, DynamoDB.
+        "partition_key: orders-2026-01-15",
+        // Every payments SDK log line.
+        "idempotency_key: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8",
+        // Pusher, Laravel.
+        "  app_key: frontend-v2",
+        // S3.
+        "bucket_key: prod/state/v1",
+        // Deliberately lost: as often a key id or a public verification key as
+        // it is a secret. See `KEY_QUALIFIERS`.
+        "signing_key: rotated-2026-01",
+        "ENCRYPTION_KEY=8f14e45fceea167a5a36dedd4bea2543",
+        // The *public* half of an age keypair — the recipient. Warning about
+        // this one while missing the private half is the worst of both.
+        "age_key: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+    ] {
+        assert!(
+            scan(text, &rules, &KEY).is_empty(),
+            "ordinary output reported as a credential: {text}"
+        );
+    }
+}
+
+/// The other half of the same decision: tightening the name test must not have
+/// cost a name that really does carry a secret.
+#[test]
+fn a_name_that_carries_a_secret_still_reports() {
+    let rules = builtin();
+    for text in [
+        "API_KEY=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "SECRET_KEY=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "MY_PRIVATE_KEY=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "ACCESS_KEY=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "AUTH_KEY=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "MEILI_MASTER_KEY=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "  apikey: Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "CLIENT_SECRET=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "DB_PASSWORD=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "PASSWORD=hunter2",
+        "GPG_PASSPHRASE=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        "REGISTRY_CREDENTIALS=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+    ] {
+        let matches = scan(text, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "stopped reporting: {text} ({matches:?})");
+        assert_eq!(matches[0].pattern, "env_assignment", "{text}");
+    }
+}
+
+/// `age-keygen` prints both halves next to each other. Only one of them is a
+/// secret, and until now the scanner had it backwards.
+#[test]
+fn only_the_private_half_of_an_age_keypair_reports() {
+    let rules = builtin();
+    let output = format!(
+        "$ age-keygen\n# created: 2026-01-15T09:12:44Z\n# public key: \
+         age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p\n{}\n",
+        vector("age_secret_key").value
+    );
+    let matches = scan(&output, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "age_secret_key");
+    assert_eq!(matches[0].confidence, Confidence::Strong);
+    assert_eq!(matches[0].line, 4);
+
+    // The prefix inside a longer token, and a body that is too short, are not
+    // keys. `1`, `B`, `I` and `O` are outside the bech32 charset.
+    for text in [
+        "AGE-SECRET-KEY-1QPZRY9X8GF2TVDW0S3JN54KHCE",
+        "AGE-SECRET-KEY-1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "age-secret-key-1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce",
+    ] {
+        assert!(scan(text, &rules, &KEY).is_empty(), "unexpected: {text}");
+    }
+}
+
 #[test]
 fn deliberately_unshipped_rules_stay_quiet() {
     let rules = builtin();
@@ -679,6 +808,46 @@ fn crlf_line_endings_do_not_shift_the_line_or_the_value() {
     assert_eq!(matches[0].line, 2);
     assert_eq!(matches[0].value_len, 24);
     assert_eq!(matches[0].digest, digest(&KEY, "Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6"));
+}
+
+/// The span the scanner reports is the span it validated.
+///
+/// The assignment rules capture to end of line, so the raw capture carries
+/// trailing whitespace and a trailing comma while the plausibility check runs
+/// on the trimmed value. Reporting the raw capture put spaces where the four
+/// identifying tail characters belong, overstated `value_len`, and — because
+/// the digest is the identity of a finding — turned one secret into two
+/// findings, so acknowledging one left the other lit.
+#[test]
+fn trailing_whitespace_and_separators_do_not_change_the_finding() {
+    let rules = builtin();
+    let secret = "Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6";
+    let expected = digest(&KEY, secret);
+
+    for text in [
+        "MY_SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6".to_string(),
+        "MY_SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6     ".to_string(),
+        "MY_SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6\t".to_string(),
+        "MY_SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6,".to_string(),
+        "MY_SERVICE_TOKEN=Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6;  ".to_string(),
+        "  api_key: Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6   ".to_string(),
+        "  api_key: Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6,".to_string(),
+        "  \"api_key\": \"Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6\",".to_string(),
+        "  - api_key: 'Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6'  ".to_string(),
+    ] {
+        let matches = scan(&text, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{text:?}: {matches:?}");
+        let found = &matches[0];
+        assert_eq!(found.value_len, 24, "value_len for {text:?}");
+        assert_eq!(found.preview, mask(secret), "preview for {text:?}");
+        assert_eq!(found.digest, expected, "digest for {text:?}");
+        // Whatever the padding was, none of it reached the preview.
+        assert!(
+            !found.preview.contains([' ', '\t', ',', ';', '"', '\'']),
+            "padding reached the preview for {text:?}: {:?}",
+            found.preview
+        );
+    }
 }
 
 #[test]
@@ -969,6 +1138,56 @@ fn many_lines_scan_quickly() {
         "{} bytes took too long",
         text.len()
     );
+}
+
+/// A flood of weak matches must not be able to hide a strong one, and a scan
+/// that stopped looking has to be able to say so.
+///
+/// The cap used to be one budget shared by every rule, checked in a loop over
+/// the rules in declaration order, so 2 000 `AROA…` lines from an early rule
+/// meant `github_token` — declared later — never ran at all. The pane looked
+/// clean of tokens because nothing had looked.
+#[test]
+fn a_flood_of_weak_matches_neither_starves_a_strong_rule_nor_passes_in_silence() {
+    let rules = builtin();
+    let mut text = String::new();
+    for index in 0..2_100 {
+        text.push_str(&format!("AROAZ3MXVX7QJH2W{index:04}\n"));
+    }
+    text.push_str("ghp_0123456789abcdefghijklmnopqrstuvwxyz\n");
+
+    let scanned = scan_reporting(&text, &rules, &KEY);
+    assert!(
+        scanned
+            .matches
+            .iter()
+            .any(|found| found.pattern == "github_token"),
+        "the token was hidden by the flood"
+    );
+
+    // The prolific rule is capped, and only that rule.
+    let principals = scanned
+        .matches
+        .iter()
+        .filter(|found| found.pattern == "aws_principal_id")
+        .count();
+    assert!(principals > 0 && principals < 2_100, "{principals} kept");
+
+    // And the truncation is said out loud, naming the rule that stopped.
+    assert_eq!(scanned.notes.len(), 1, "{:?}", scanned.notes);
+    assert!(
+        scanned.notes[0].contains("aws_principal_id"),
+        "{:?}",
+        scanned.notes
+    );
+
+    // A scan that ran to completion says nothing.
+    assert!(scan_reporting(NEGATIVE, &rules, &KEY).notes.is_empty());
+    assert!(scan_reporting(vector("github_token").text, &rules, &KEY)
+        .notes
+        .is_empty());
+    // `scan` is `scan_reporting` with the notes dropped.
+    assert_eq!(scan(&text, &rules, &KEY), scanned.matches);
 }
 
 #[test]
