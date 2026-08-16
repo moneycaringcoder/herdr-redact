@@ -12,6 +12,8 @@ at least one minor cycle.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-16
+
 ### Added
 
 - First release. Scans the recent output of every agent pane on an interval,
