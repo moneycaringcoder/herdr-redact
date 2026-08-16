@@ -73,8 +73,11 @@ secret in itself, and losing it costs you nothing but your acknowledgements.
   arbitrary terminal output by construction, so a regex that backtracks
   catastrophically or an allocation proportional to attacker-chosen input is a
   denial of service on the user's own machine.
-- **Command injection through a config value.** The only subprocess this plugin
-  ever runs is `herdr server reload-config`, with an argv array and no shell. A
+- **Command injection through a config value.** This plugin spawns exactly two
+  subprocesses, both with an argv array and no shell: `herdr server
+  reload-config`, from the setup action, and its own binary re-executed as
+  `--daemon` when the watcher is enabled. Neither takes an argument derived from
+  a config value, a pane's contents, or anything else an attacker could reach. A
   way around that is worth reporting.
 
 ### What is out of scope

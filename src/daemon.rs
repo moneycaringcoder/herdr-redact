@@ -95,7 +95,14 @@ pub fn restore() -> Result<()> {
 }
 
 /// The scan loop itself, running in the foreground.
-pub fn run(config: &Config) -> Result<()> {
+///
+/// Takes the command line rather than a `Config` because it re-reads the config
+/// file every cycle. A watcher enabled once and left running for a week would
+/// otherwise still be using the rules it started with, while `redact --rules`
+/// in a shell reported the new ones as active — a user could edit
+/// `config.json`, see their pattern listed, and never be protected by it.
+pub fn run(args: &[String]) -> Result<()> {
+    let mut config = config::load_with_args(args)?;
     write_pid(std::process::id());
 
     // Which token name is currently lit per target. A severity flip has to
@@ -105,7 +112,7 @@ pub fn run(config: &Config) -> Result<()> {
     let stopping = Arc::new(AtomicBool::new(false));
     spawn_signal_thread(Arc::clone(&active), Arc::clone(&stopping))?;
 
-    let mut store = Store::load(config);
+    let mut store = Store::load(&config);
     let mut client: Option<Herdr> = None;
     // Notes repeat every cycle for as long as their cause lasts, so only the
     // ones that are new since the last cycle are worth printing.
@@ -122,6 +129,16 @@ pub fn run(config: &Config) -> Result<()> {
             }
         }
 
+        // Config first, so a pattern added to the file is in force this cycle
+        // rather than after a restart. A file that has become malformed is a
+        // warning from `config::load_file` and the defaults, never a reason to
+        // stop scanning; only a command line we can no longer parse is fatal,
+        // and that cannot change under a running process.
+        match config::load_with_args(args) {
+            Ok(reloaded) => config = reloaded,
+            Err(err) => eprintln!("redact: keeping the previous configuration: {err}"),
+        }
+
         if client.is_none() {
             match Herdr::connect() {
                 Ok(connected) => client = Some(connected),
@@ -131,17 +148,17 @@ pub fn run(config: &Config) -> Result<()> {
         if let Some(connected) = client.as_mut() {
             // Picks up an acknowledgement made from a shell since the last
             // cycle, so this run's save cannot undo it.
-            store.reload_if_changed(config);
+            store.reload_if_changed(&config);
 
-            match scan_cycle_with_panes(connected, config, &mut store) {
+            match scan_cycle_with_panes(connected, &config, &mut store) {
                 Ok((report, panes)) => {
                     for note in new_notes(&reported_notes, &report.notes) {
                         eprintln!("redact: {note}");
                     }
                     reported_notes.clone_from(&report.notes);
 
-                    notify_new(connected, config, &mut store);
-                    push(connected, config, &report, &panes, &active);
+                    notify_new(connected, &config, &mut store);
+                    push(connected, &config, &report, &panes, &active);
 
                     if let Err(err) = store.save() {
                         eprintln!("redact: could not save findings: {err}");
@@ -473,7 +490,15 @@ pub fn badge_plan_with(
     pane_ids.sort_unstable();
     pane_ids.dedup();
 
-    let mut workspace_ids: Vec<&str> = panes.iter().map(|p| p.workspace_id.as_str()).collect();
+    // A pane may arrive with no workspace id — herdr reports absent context as
+    // an empty string. Such a pane is still scanned and still badged as a pane;
+    // it just has no workspace row to light, and asking herdr to report metadata
+    // for workspace "" would be a rejected call every cycle.
+    let mut workspace_ids: Vec<&str> = panes
+        .iter()
+        .map(|p| p.workspace_id.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
     workspace_ids.sort_unstable();
     workspace_ids.dedup();
 
@@ -806,7 +831,22 @@ fn spawn_detached(forwarded: &[String]) -> Result<()> {
         .args(forwarded)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        // The child inherits our environment, and `HERDR_PANE_ID` in it names
+        // the pane the *user* ran `--enable` from. The scan filter reads that
+        // variable to avoid scanning its own findings pane, so a daemon that
+        // kept it would skip the user's shell for its entire life — and report
+        // the skip as deliberate.
+        //
+        // That is the worst possible pane to lose. The README's own argument is
+        // that the terminal where somebody ran `cat .env` is usually a shell
+        // rather than an agent pane, and a shell is exactly where `--enable`
+        // gets typed.
+        //
+        // A daemon has no pane of its own, so unsetting is correct rather than
+        // merely convenient. `--watch`, which really does run in a pane, keeps
+        // the variable.
+        .env_remove("HERDR_PANE_ID");
     // A daemon herdr spawned as a child dies with herdr. `setsid` puts it in
     // its own session so it survives; a double fork is not needed, and the
     // extra process would only make the pid we record harder to track.

@@ -335,3 +335,52 @@ fn the_configured_tokens_are_wire_legal_and_match_the_alert_names() {
         );
     }
 }
+
+/// The review found this one: a config with no `[ui.sidebar.agents]` section got
+/// the workspace tokens, a success message, and no pane badge — and the pane
+/// badge is the primary surface, because a finding belongs to a pane.
+///
+/// The splice still declines to invent that section, because writing agent rows
+/// would change how every agent row looks and we do not know what herdr's
+/// defaults are. What it must not do is stay quiet about it.
+#[test]
+fn a_config_with_no_agents_sidebar_reports_the_section_it_could_not_configure() {
+    let text = "[ui.sidebar.spaces]\nrows = [\n  [\"state_icon\", \"workspace\"],\n]\n";
+    let edit = redact::setup::plan(text).expect("edited");
+
+    assert_eq!(edit.configured, vec!["[ui.sidebar.spaces]"]);
+    assert_eq!(
+        edit.missing,
+        vec!["[ui.sidebar.agents]"],
+        "the section that could not be configured has to be reported, not swallowed"
+    );
+    assert!(!edit.text.contains("[ui.sidebar.agents]"));
+
+    // And the snippet handed to the user has to be something they can paste:
+    // both tokens, inside a row, in that section.
+    let snippet = redact::setup::manual_snippet("[ui.sidebar.agents]");
+    assert!(snippet.contains("[ui.sidebar.agents]"));
+    for token in Alert::CONFIGURED_TOKENS {
+        assert!(
+            snippet.contains(&format!("\"${token}\"")),
+            "{token} missing"
+        );
+    }
+    for at in token_positions(&snippet) {
+        assert!(
+            row_containing(&snippet, at).is_some(),
+            "the snippet puts an entry outside every row:\n{snippet}"
+        );
+    }
+}
+
+#[test]
+fn a_config_with_both_sidebars_reports_nothing_missing() {
+    let edit = redact::setup::plan(REALISTIC).expect("edited");
+    assert_eq!(edit.configured.len(), 2);
+    assert!(
+        edit.missing.is_empty(),
+        "nothing should be missing: {:?}",
+        edit.missing
+    );
+}

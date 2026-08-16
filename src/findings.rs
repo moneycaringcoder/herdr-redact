@@ -443,6 +443,18 @@ impl Store {
     /// already looked at them. An unacknowledged finding is only ever dropped
     /// when there is nothing acknowledged left to drop, and that is loud —
     /// silently forgetting a warning is the one thing this store must not do.
+    /// Trims the store back to `max_findings`.
+    ///
+    /// Acknowledged findings go first, oldest by `last_seen`; only when there
+    /// are none left does an unacknowledged one get dropped, and that is loud.
+    ///
+    /// Ties are broken by **insertion order**, not by id. Every finding from one
+    /// cycle shares the same `now`, so a tie is the normal case rather than the
+    /// exotic one, and an id tie-break made the choice effectively random: the
+    /// finding discovered *this* cycle could be the one dropped, while the note
+    /// said the oldest had been. `min_by` returns the first of several equal
+    /// minima, and `self.findings` is push-ordered, so leaving the id out of the
+    /// key is what makes "oldest" mean oldest.
     fn enforce_cap(&mut self) {
         while self.findings.len() > self.max_findings {
             let acknowledged = self
@@ -450,36 +462,33 @@ impl Store {
                 .iter()
                 .enumerate()
                 .filter(|(_, f)| f.acknowledged)
-                .min_by(|(_, a), (_, b)| {
-                    (a.last_seen, a.first_seen, &a.id).cmp(&(b.last_seen, b.first_seen, &b.id))
-                })
+                .min_by_key(|(_, f)| (f.last_seen, f.first_seen))
                 .map(|(index, _)| index);
-            match acknowledged {
-                Some(index) => {
-                    self.findings.remove(index);
-                }
-                None => {
-                    let index = self
-                        .findings
+            let (index, unacknowledged) = match acknowledged {
+                Some(index) => (index, false),
+                None => (
+                    self.findings
                         .iter()
                         .enumerate()
-                        .min_by(|(_, a), (_, b)| {
-                            (a.first_seen, a.last_seen, &a.id).cmp(&(
-                                b.first_seen,
-                                b.last_seen,
-                                &b.id,
-                            ))
-                        })
+                        .min_by_key(|(_, f)| (f.first_seen, f.last_seen))
                         .map(|(index, _)| index)
-                        .unwrap_or(0);
-                    self.findings.remove(index);
-                    let cap = self.max_findings;
-                    self.push_note(format!(
-                        "the findings cap of {cap} was reached with nothing acknowledged; the \
-                         oldest unacknowledged findings were dropped and are no longer being \
-                         reported"
-                    ));
-                }
+                        .unwrap_or(0),
+                    true,
+                ),
+            };
+            let dropped = self.findings.remove(index);
+            // A finding that no longer exists must not be toasted about. It was
+            // queued for notification the moment it was observed, and a toast
+            // naming an id that `--ack` cannot find is worse than no toast.
+            self.pending.retain(|f| f.id != dropped.id);
+
+            if unacknowledged {
+                let cap = self.max_findings;
+                self.push_note(format!(
+                    "the findings cap of {cap} was reached with nothing acknowledged; the oldest \
+                     unacknowledged findings were dropped and will not be reported again until \
+                     their pane's output changes"
+                ));
             }
         }
     }

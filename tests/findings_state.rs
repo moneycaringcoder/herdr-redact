@@ -652,3 +652,51 @@ fn adopting_external_state_only_ever_adds_acknowledgement() {
     );
     drop(state);
 }
+
+/// The review found this: every finding from one cycle shares the same `now`, so
+/// the cap's tie-break decided by id — effectively at random. The finding
+/// discovered *this* cycle could be the one dropped, while the note claimed the
+/// oldest had been, and it was dropped after being queued for a toast, so a
+/// notification fired naming an id `--ack` could not find.
+#[test]
+fn the_cap_drops_the_oldest_when_every_finding_shares_a_timestamp() {
+    let state = StateDir::new();
+    let config = config(2);
+    let mut store = Store::load(&config);
+
+    // Three findings, one cycle, one clock reading.
+    let first = store.observe(&pane("wE:p1"), &[a_match("aws_access_key_id", 1)], 100);
+    let second = store.observe(&pane("wE:p1"), &[a_match("github_token", 2)], 100);
+    let third = store.observe(&pane("wE:p1"), &[a_match("slack_token", 3)], 100);
+    assert_eq!((first.len(), second.len(), third.len()), (1, 1, 1));
+
+    let kept: Vec<String> = store.findings().iter().map(|f| f.id.clone()).collect();
+    assert_eq!(kept.len(), 2, "the cap did not bite");
+    assert!(
+        !kept.contains(&first[0].id),
+        "the oldest finding should have gone first"
+    );
+    assert!(
+        kept.contains(&third[0].id),
+        "the newest finding was dropped instead of the oldest: {kept:?}"
+    );
+
+    // And the one that was dropped must not still be queued for a toast, or the
+    // user gets a notification carrying an id that `--ack` cannot resolve.
+    let pending: Vec<String> = store
+        .take_new_findings()
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    assert!(
+        !pending.contains(&first[0].id),
+        "a dropped finding was still queued for a notification: {pending:?}"
+    );
+    for id in &pending {
+        assert!(
+            store.findings().iter().any(|f| &f.id == id),
+            "queued a toast for a finding that is not in the store: {id}"
+        );
+    }
+    drop(state);
+}

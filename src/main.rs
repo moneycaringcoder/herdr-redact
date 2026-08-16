@@ -95,7 +95,7 @@ fn run(args: &[String]) -> Result<()> {
         "--disable" => daemon::disable(),
         "--toggle" => daemon::toggle(args),
         "--restore" => daemon::restore(),
-        "--daemon" => daemon::run(&config::load_with_args(args)?),
+        "--daemon" => daemon::run(args),
         "--status" => status(),
         "--setup" => setup::run_setup(),
         "--setup-rollback" => setup::run_rollback(),

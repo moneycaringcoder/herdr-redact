@@ -24,11 +24,21 @@ use redact::render::{abbreviate, badge, report_json, report_text, BADGE_COLUMNS,
 // Test-local display width
 // ---------------------------------------------------------------------------
 
-/// Width of `text` in terminal columns. Written from scratch rather than
-/// reusing `render::display_width`, and rather than pulling in `unicode-width`,
-/// which is not a dependency of this crate.
+/// Width of `text` in terminal columns, for the test's own assertions.
+///
+/// It delegates to `unicode-width`, the same crate the renderer uses, which
+/// looks like the mistake the module docs warn against — a test measuring with
+/// the code's own ruler. It is not quite: the renderer's job on top of the crate
+/// is stripping ANSI and control characters and measuring whole strings rather
+/// than characters, and that is the part this re-implements independently.
+///
+/// The ruler itself is pinned by [`the_width_table_is_right_about_hard_cases`]
+/// below, which asserts hard-coded expected widths for the characters a
+/// hand-rolled range table got wrong. Those numbers came from a reviewer
+/// checking them against a terminal, not from either implementation.
 fn columns(text: &str) -> usize {
-    let mut total = 0;
+    use unicode_width::UnicodeWidthStr;
+    let mut visible = String::with_capacity(text.len());
     let mut in_escape = false;
     for ch in text.chars() {
         if in_escape {
@@ -45,23 +55,44 @@ fn columns(text: &str) -> usize {
         if ch.is_control() {
             continue;
         }
-        total += match ch as u32 {
-            // Combining marks and variation selectors take no space.
-            0x0300..=0x036f | 0x200b..=0x200f | 0xfe00..=0xfe0f | 0xfeff => 0,
-            // The common East Asian wide and fullwidth blocks take two.
-            0x1100..=0x115f
-            | 0x2e80..=0xa4cf
-            | 0xac00..=0xd7a3
-            | 0xf900..=0xfaff
-            | 0xfe30..=0xfe6f
-            | 0xff00..=0xff60
-            | 0xffe0..=0xffe6
-            | 0x1f300..=0x1f64f
-            | 0x1f900..=0x1f9ff => 2,
-            _ => 1,
-        };
+        visible.push(ch);
     }
-    total
+    UnicodeWidthStr::width(visible.as_str())
+}
+
+/// Hard-coded widths for the cases a hand-rolled range table got wrong, so the
+/// ruler both sides of these tests use is itself pinned to something outside
+/// this crate.
+///
+/// Under-counting is the dangerous direction: every layout promise in the
+/// renderer is "no line exceeds the width it was given".
+#[test]
+fn the_width_table_is_right_about_hard_cases() {
+    let cases: [(&str, usize); 10] = [
+        ("plain", 5),
+        ("\u{1f680}", 2),          // 🚀, above the 1F300–1F64F block
+        ("\u{2705}", 2),           // ✅, an emoji well below it
+        ("\u{1f44d}\u{1f3fd}", 2), // 👍🏽, base plus skin-tone modifier
+        // 👨‍👩‍👧 — a ZWJ family sequence, three people and two joiners.
+        ("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", 2),
+        ("\u{5e2d}\u{4f4d}", 4), // 席位, East Asian wide
+        ("\u{05d0}\u{05b0}", 1), // Hebrew alef with a vowel point
+        ("\u{0e01}\u{0e31}", 1), // Thai ko kai with a vowel sign
+        ("\u{26a0}", 1),         // ⚠, the badge mark, text presentation
+        ("\u{2691}", 1),         // ⚑, the weak mark
+    ];
+    for (text, expected) in cases {
+        assert_eq!(
+            columns(text),
+            expected,
+            "the test's own ruler is wrong about {text:?}"
+        );
+        assert_eq!(
+            redact::render::display_width(text),
+            expected,
+            "the renderer's ruler is wrong about {text:?}"
+        );
+    }
 }
 
 fn widest(text: &str) -> usize {
@@ -543,4 +574,39 @@ fn no_rendering_contains_the_secret() {
             "a rendering contained the middle of the credential:\n{text}"
         );
     }
+}
+
+/// The review found this: with every pane read failing, the empty-table branch
+/// said "herdr reported no panes to read" — false, and contradicted two lines
+/// later by "3 panes could not be read at all".
+#[test]
+fn every_read_failing_is_not_reported_as_an_empty_session() {
+    let all_failed = Report {
+        panes_scanned: 0,
+        panes_unread: 3,
+        notes: vec!["pane w1:p1 could not be read: timed out".to_string()],
+        generated_at: NOW,
+        ..Report::default()
+    };
+    let no_panes = Report {
+        generated_at: NOW,
+        ..Report::default()
+    };
+
+    let failed = flatten(&report_text(&all_failed, 80));
+    let empty = flatten(&report_text(&no_panes, 80));
+
+    assert!(
+        !failed.contains("no panes to read"),
+        "a session whose reads all failed is not a session with no panes:\n{failed}"
+    );
+    assert!(
+        failed.contains("nobody looked at") || failed.contains("failed"),
+        "the failure is not stated:\n{failed}"
+    );
+    assert!(
+        empty.contains("no panes to read"),
+        "the genuinely empty session lost its own message:\n{empty}"
+    );
+    assert_ne!(failed, empty);
 }

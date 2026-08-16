@@ -17,6 +17,12 @@ serde_json = "1"
 # guarantees linear-time matching — which matters when the input is somebody
 # else's terminal output.
 regex = "1"
+# Terminal column widths. Hand-rolling this was tried and was wrong in six ways
+# a reviewer found in one sitting — emoji outside the 1F300 block measured one
+# column, skin-tone modifiers and ZWJ sequences measured four and six, Hebrew
+# points and Thai vowel signs measured one instead of zero. Every one of those
+# breaks the promise that no rendered line exceeds the width it was given.
+unicode-width = "0.2.2"
 
 # Unix-only: setsid for daemon detachment, and SIGINT/SIGTERM shutdown plumbing.
 [target.'cfg(unix)'.dependencies]

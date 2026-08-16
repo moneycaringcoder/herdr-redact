@@ -22,8 +22,12 @@ your agents print keys, tokens and connection strings into.
 
 Everything else about it is built to make that safe:
 
-- **Scanning is opt-in.** A fresh install starts nothing. No pane is read until you enable the
-  watcher, and disabling it stops the reading and clears every badge it set.
+- **Background scanning is opt-in.** A fresh install starts nothing and reads nothing on its own.
+  Nothing is read until you either enable the watcher or run a scan yourself, and disabling the
+  watcher stops the reading and clears every badge it set. To be exact about which of those is which:
+  `--enable` starts the background watcher, and `--once`, `--json` and the **Redact: findings** pane
+  each read panes for as long as you have them open, whether or not the watcher is running. A plugin
+  action you invoke is you asking it to look.
 - **No secret is ever written anywhere.** Not to a log, not to the state file, not into a toast, not
   into the JSON output, not into a badge. A finding records the rule that fired, the pane it fired
   in, the length of the value, a keyed fingerprint used only to recognise the same finding again —

@@ -75,23 +75,68 @@ fn already_configured(text: &str) -> bool {
         .any(|token| text.contains(&format!("\"${token}\"")))
 }
 
+/// What one run of the splice did, so the caller can tell the user the whole
+/// truth rather than the flattering half of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub text: String,
+    /// Sections that gained our tokens.
+    pub configured: Vec<&'static str>,
+    /// Sections we could not touch. Non-empty means a badge the user is about to
+    /// be told about will not actually render.
+    pub missing: Vec<&'static str>,
+}
+
 /// Splices the token entries into every sidebar section this plugin badges.
 ///
 /// Returns `None` when the file already mentions our tokens, so a second run is
 /// a no-op rather than a duplicate insert.
 pub fn plan_edit(text: &str) -> Option<String> {
+    plan(text).map(|edit| edit.text)
+}
+
+/// [`plan_edit`], with the per-section outcome.
+///
+/// The distinction matters because the two sidebars carry different badges. A
+/// user whose `config.toml` has no `[ui.sidebar.agents]` section gets the
+/// workspace badge and **not** the pane badge — and the pane badge is the
+/// primary surface, since a finding belongs to a pane. Reporting "sidebar tokens
+/// added" and leaving that unsaid would be a success message for a half-working
+/// install.
+pub fn plan(text: &str) -> Option<Edit> {
     if already_configured(text) {
         return None;
     }
     let mut out = text.to_string();
-    let mut changed = false;
+    let mut configured = Vec::new();
+    let mut missing = Vec::new();
     for section in SECTIONS {
-        if let Some(updated) = splice_section(&out, section) {
-            out = updated;
-            changed = true;
+        match splice_section(&out, section) {
+            Some(updated) => {
+                out = updated;
+                configured.push(section);
+            }
+            None => missing.push(section),
         }
     }
-    changed.then_some(out)
+    (!configured.is_empty()).then_some(Edit {
+        text: out,
+        configured,
+        missing,
+    })
+}
+
+/// The rows a user has to add by hand when we could not add them, printed
+/// verbatim so it can be pasted.
+pub fn manual_snippet(section: &str) -> String {
+    let mut out = String::from(section);
+    out.push_str("\nrows = [\n  # …your existing rows…\n  [\n");
+    for line in token_lines() {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push_str("  ],\n]\n");
+    out
 }
 
 /// Splices the entries into one section's rows array, or appends a complete
@@ -107,8 +152,13 @@ fn splice_section(text: &str, section: &str) -> Option<String> {
     let Some(section_start) = find_section(text, section) else {
         // Only the spaces sidebar is worth inventing from nothing. A user with
         // no `[ui.sidebar.agents]` section is on herdr's default agent rows, and
-        // replacing those wholesale would be a much bigger change than they
-        // asked for.
+        // writing a replacement for those would change how every agent row looks
+        // — a much bigger change than "add a badge" and not one we can make
+        // safely, since we do not know what those defaults are.
+        //
+        // Returning `None` here is what puts the section into `Edit::missing`,
+        // and `run_setup` prints the snippet to paste. Silence would be the bug:
+        // the pane badge simply would not appear and nothing would say why.
         return (section == SECTIONS[0]).then(|| append_section(text, section));
     };
     let section_end = next_section(text, section_start);
@@ -285,10 +335,11 @@ pub fn run_setup() -> Result<()> {
     let text = std::fs::read_to_string(&config)
         .map_err(|e| format!("cannot read {}: {e}", config.display()))?;
 
-    let Some(updated) = plan_edit(&text) else {
+    let Some(edit) = plan(&text) else {
         println!("redact: sidebar tokens are already configured; nothing to do.");
         return Ok(());
     };
+    let updated = edit.text.clone();
 
     let backup = backup_path(&config);
     if backup.exists() {
@@ -308,6 +359,23 @@ pub fn run_setup() -> Result<()> {
                 config.display(),
                 backup.display()
             );
+            for section in &edit.configured {
+                println!("redact:   {section} — done");
+            }
+            // Loud, and on stderr, because this is the half that did not work.
+            for section in &edit.missing {
+                let what = if *section == SECTIONS[1] {
+                    "the pane badge, which is where a finding actually is,"
+                } else {
+                    "the workspace badge"
+                };
+                eprintln!(
+                    "redact: your config.toml has no {section} section, so {what} will not \
+                     render. Add this to {}, then run `herdr server reload-config`:\n\n{}",
+                    config.display(),
+                    manual_snippet(section)
+                );
+            }
             println!("redact: run `redact --setup-rollback` to undo.");
             Ok(())
         }

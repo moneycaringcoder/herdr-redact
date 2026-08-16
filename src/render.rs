@@ -172,13 +172,24 @@ fn summary_lines(report: &Report) -> Vec<String> {
     let live = total - acknowledged;
 
     if total == 0 {
-        // Three different reasons for an empty table, and the user has to be
-        // able to tell them apart: we looked and it was clean, we were not
-        // allowed to look, or there was nothing to look at.
+        // Four different reasons for an empty table, and the user has to be able
+        // to tell them apart: we looked and it was clean, we tried and failed, we
+        // were not allowed to look, or there was nothing to look at.
+        //
+        // The order matters. "We tried and failed" is checked before the
+        // no-panes case, because a session where every read failed still has
+        // panes — saying herdr reported none would be false as well as
+        // contradicted by the line below it.
         if report.panes_scanned > 0 {
             lines.push(format!(
                 "{} scanned, nothing found.",
                 panes(report.panes_scanned)
+            ));
+        } else if report.panes_unread > 0 {
+            lines.push(format!(
+                "Nothing was scanned: every one of the {} we tried to read failed. This is not a \
+                 clean session — it is a session nobody looked at.",
+                panes(report.panes_unread)
             ));
         } else if report.panes_skipped > 0 {
             lines.push(format!(
@@ -528,15 +539,27 @@ fn alert_name(alert: Alert) -> &'static str {
 // Text helpers
 // ---------------------------------------------------------------------------
 
-/// Width of `text` in terminal display columns. Hand-rolled because the crate
-/// takes no width dependency: control characters and CSI escape sequences count
-/// zero, combining marks count zero, and the common East Asian wide blocks
-/// count two.
+/// Width of `text` in terminal display columns.
+///
+/// ANSI CSI escape sequences are stripped and count zero; everything else is
+/// measured by `unicode-width`, which implements UAX #11 plus the emoji rules.
+///
+/// This used to be a hand-rolled range table, and it was wrong in six ways a
+/// reviewer found in one sitting: `🚀` measured one column because it sits above
+/// the 1F300–1F64F block, `👍🏽` measured four because the skin-tone modifier was
+/// counted separately, a ZWJ family sequence measured six, and Hebrew points and
+/// Thai vowel signs measured one instead of zero. Under-counting is the
+/// dangerous direction: every layout promise in this file is "no line exceeds
+/// the width it was given", and a ruler that reads short breaks all of them at
+/// once.
 pub fn display_width(text: &str) -> usize {
-    let mut width = 0;
+    use unicode_width::UnicodeWidthStr;
+
+    let mut visible = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\u{1b}' {
+            // CSI: ESC [ … final byte in 0x40..=0x7e.
             if chars.peek() == Some(&'[') {
                 chars.next();
                 for tail in chars.by_ref() {
@@ -547,49 +570,14 @@ pub fn display_width(text: &str) -> usize {
             }
             continue;
         }
-        width += char_columns(ch);
+        if ch.is_control() {
+            continue;
+        }
+        visible.push(ch);
     }
-    width
-}
-
-fn char_columns(ch: char) -> usize {
-    if ch.is_control() {
-        return 0;
-    }
-    let code = ch as u32;
-    let zero_width = matches!(code,
-        0x0300..=0x036f      // combining diacriticals
-        | 0x1ab0..=0x1aff    // combining diacriticals extended
-        | 0x20d0..=0x20ff    // combining marks for symbols
-        | 0x200b..=0x200f    // zero width space .. RLM
-        | 0xfe00..=0xfe0f    // variation selectors
-        | 0xfe20..=0xfe2f    // combining half marks
-        | 0xfeff);
-    if zero_width {
-        return 0;
-    }
-    let wide = matches!(code,
-        0x1100..=0x115f
-        | 0x2e80..=0x303e
-        | 0x3041..=0x33ff
-        | 0x3400..=0x4dbf
-        | 0x4e00..=0x9fff
-        | 0xa000..=0xa4cf
-        | 0xac00..=0xd7a3
-        | 0xf900..=0xfaff
-        | 0xfe10..=0xfe19
-        | 0xfe30..=0xfe6f
-        | 0xff00..=0xff60
-        | 0xffe0..=0xffe6
-        | 0x1f300..=0x1f64f
-        | 0x1f900..=0x1f9ff
-        | 0x20000..=0x2fffd
-        | 0x30000..=0x3fffd);
-    if wide {
-        2
-    } else {
-        1
-    }
+    // Measured over the whole string rather than character by character, which
+    // is what lets a ZWJ sequence or a skin-tone modifier count once.
+    UnicodeWidthStr::width(visible.as_str())
 }
 
 /// Trims `text` to `max` display columns from the right, marking the cut with
@@ -609,14 +597,18 @@ pub fn truncate_right(text: &str, max: usize) -> String {
 
     let budget = max - 1;
     let mut out = String::new();
-    let mut used = 0;
     for ch in text.chars() {
-        let columns = char_columns(ch);
-        if used + columns > budget {
+        // Measured by re-widening the whole prefix rather than by adding up
+        // per-character widths. A grapheme cluster — a skin-tone modifier, a ZWJ
+        // sequence — is not the sum of its characters' widths, and the sum is
+        // always the larger of the two, so per-character accounting cuts short
+        // rather than long. It still has to be measured as a whole or the cut
+        // itself can land mid-cluster.
+        out.push(ch);
+        if display_width(&out) > budget {
+            out.pop();
             break;
         }
-        used += columns;
-        out.push(ch);
     }
     out.push(ELLIPSIS);
     out

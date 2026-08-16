@@ -357,11 +357,20 @@ fn reduce_snapshot(snapshot: &Value) -> Vec<PaneRef> {
 
     let mut panes = Vec::new();
     for pane in array(snapshot, "panes") {
-        let (Some(pane_id), Some(workspace_id)) =
-            (text(pane, "pane_id"), text(pane, "workspace_id"))
-        else {
+        // A pane with no id cannot be read or badged, so there is nothing to do
+        // with it. A pane with no *workspace* id is a different matter: it can
+        // still be read and it can still carry a pane badge, only its workspace
+        // badge has nowhere to go.
+        //
+        // Dropping it here was a silent hole. It would not be scanned, and it
+        // would also not be counted as scanned, skipped or unread — it would
+        // simply not exist, and `prune_to` would then delete any findings it
+        // already had. herdr reports absent context as an empty string, so this
+        // is reachable rather than theoretical.
+        let Some(pane_id) = text(pane, "pane_id") else {
             continue;
         };
+        let workspace_id = text(pane, "workspace_id").unwrap_or_default();
         panes.push(PaneRef {
             pane_id: pane_id.to_string(),
             workspace_id: workspace_id.to_string(),
