@@ -12,6 +12,18 @@ at least one minor cycle.
 
 ## [Unreleased]
 
+### Changed
+
+- `min_herdr_version` is now `0.8.0`, up from `0.7.5`, and the README badge
+  agrees. The old floor was reasoned from when the socket APIs redact calls
+  first appeared; it was never exercised against a 0.7.x server. 0.8.0 is the
+  latest stable herdr and the only version redact has been developed and
+  verified against, so the manifest now states a tested claim rather than an
+  inferred one. **Installing on herdr 0.7.5 through 0.7.x, which the manifest
+  previously permitted, will now be refused.** If you are on one of those and
+  redact worked for you, say so on the issue tracker and the floor can come back
+  down with evidence behind it.
+
 ## [0.1.0] - 2026-08-16
 
 ### Added

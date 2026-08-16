@@ -12,10 +12,14 @@
 id = "moneycaringcoder.redact"
 name = "Redact"
 version = "0.1.0"
-# Oldest herdr with every API this plugin calls: the `tokens` metadata API on
-# workspace.report_metadata and pane.report_metadata, which landed in 0.7.5.
-# Developed and verified against 0.8.0 / protocol 19.
-min_herdr_version = "0.7.5"
+# The floor is the latest stable herdr, which is also the only version this
+# plugin has ever been run against: 0.8.0 / protocol 19. Earlier servers carry
+# the APIs used here — the `tokens` metadata API on workspace.report_metadata
+# and pane.report_metadata arrived in 0.7.5 — but nothing here has been
+# exercised against one, and a compatibility claim that was inferred rather than
+# measured is not one worth publishing. Lower it when someone has run the suite
+# against an older server.
+min_herdr_version = "0.8.0"
 description = "Warns when an agent pane has printed a credential."
 platforms = ["linux", "macos"]
 
