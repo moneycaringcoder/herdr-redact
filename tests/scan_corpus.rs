@@ -130,6 +130,15 @@ const POSITIVE: &[Vector] = &[
         value: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
         preview: "eyJh\u{2026}sw5c",
     },
+    // Obviously fake projected service-account JWT: the payload names the
+    // `example` namespace and account, and the signature is literal `FAKE`.
+    Vector {
+        rule: "jwt",
+        confidence: Confidence::Strong,
+        text: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2t1YmVybmV0ZXMuZGVmYXVsdC5zdmMiLCJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6ZXhhbXBsZTpleGFtcGxlIn0.FAKEFAKEFAKEFAKE",
+        value: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2t1YmVybmV0ZXMuZGVmYXVsdC5zdmMiLCJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6ZXhhbXBsZTpleGFtcGxlIn0.FAKEFAKEFAKEFAKE",
+        preview: "eyJh\u{2026}FAKE",
+    },
     Vector {
         rule: "private_key_block",
         confidence: Confidence::Strong,
@@ -189,11 +198,49 @@ const POSITIVE: &[Vector] = &[
         preview: "AGE-\u{2026}KHCE",
     },
     Vector {
+        rule: "jdbc_url_password",
+        confidence: Confidence::Strong,
+        text: "jdbc:postgresql://db.invalid/app?user=EXAMPLE&password=FAKE_A1A1A1A1A1A1A1A1A1A1",
+        value: "FAKE_A1A1A1A1A1A1A1A1A1A1",
+        preview: "FAKE\u{2026}A1A1",
+    },
+    Vector {
+        rule: "jdbc_url_password",
+        confidence: Confidence::Strong,
+        text: "jdbc:mysql://db.invalid/app;user=EXAMPLE;password=FAKE_B2B2B2B2B2B2B2B2B2B2",
+        value: "FAKE_B2B2B2B2B2B2B2B2B2B2",
+        preview: "FAKE\u{2026}B2B2",
+    },
+    // Decodes to the obviously fake `EXAMPLE:FAKE_A1A1…` credential.
+    Vector {
+        rule: "docker_registry_auth",
+        confidence: Confidence::Strong,
+        text: r#""auth": "RVhBTVBMRTpGQUtFX0ExQTFBMUExQTFBMUExQTFBMUEx""#,
+        value: "RVhBTVBMRTpGQUtFX0ExQTFBMUExQTFBMUExQTFBMUEx",
+        preview: "RVhB\u{2026}MUEx",
+    },
+    Vector {
+        rule: "vault_token",
+        confidence: Confidence::Strong,
+        text: "hvs.A1A1A1A1A1A1A1A1A1A1A1A1",
+        value: "hvs.A1A1A1A1A1A1A1A1A1A1A1A1",
+        preview: "hvs.\u{2026}A1A1",
+    },
+    Vector {
         rule: "url_credentials",
         confidence: Confidence::Weak,
         text: "psql postgres://svc:Zx9Qw7Lm2Kd8@db.internal:5432/app",
         value: "Zx9Qw7Lm2Kd8",
         preview: "Zx\u{2026}d8",
+    },
+    // MySQL URLs remain under the existing weak URL-credentials rule so the
+    // public rule name stays stable for allowlists.
+    Vector {
+        rule: "url_credentials",
+        confidence: Confidence::Weak,
+        text: "mysql://EXAMPLE:FAKE_A1A1A1A1A1A1A1A1A1A1@db.invalid/app",
+        value: "FAKE_A1A1A1A1A1A1A1A1A1A1",
+        preview: "FAKE\u{2026}A1A1",
     },
     Vector {
         rule: "http_bearer_token",
@@ -295,6 +342,21 @@ $ docker pull ubuntu:24.04
 24.04: Pulling from library/ubuntu
 Digest: sha256:2e863c44b718727c860746568e1d54afd13b2fa71b160f5cd9058fc436217b30
 Status: Downloaded newer image for ubuntu:24.04
+
+Docker config using an external credential store:
+{"credsStore": "desktop"}
+Docker layer metadata has "auth": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+Docker metadata has "auth": "bm90LWEtZG9ja2VyLWNyZWRlbnRpYWw="
+Docker metadata has "auth": "RVhBTVBMRTpGQUtFOkExQTFBMUExQTFBMQ=="
+
+JDBC URL without a password: jdbc:postgresql://db.invalid/app?user=EXAMPLE
+jdbc:postgresql://db.invalid/app?password=${DB_PASS}
+jdbc:mysql://db.invalid/app;password=changeme
+Generic URL query: https://db.invalid/app?password=FAKE_A1A1A1A1A1A1A1A1A1A1
+
+s. This ordinary sentence starts with an abbreviation.
+Vault documentation mentions hvs without a dot.
+hvs.A1A1A1A1A1
 
 LOG_LEVEL=debug
 API_KEY=

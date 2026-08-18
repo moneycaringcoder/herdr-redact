@@ -468,6 +468,9 @@ Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Str
 | `sendgrid_api_key` | `SG.…` | strong |
 | `huggingface_token` | `hf_…` | strong |
 | `age_secret_key` | `AGE-SECRET-KEY-1…`, the private half only — `age1…` is a public key and is ignored | strong |
+| `jdbc_url_password` | `password` query parameters or properties in a `jdbc:` connection string, after placeholder filtering | strong |
+| `docker_registry_auth` | Docker registry `"auth"` values that decode to exactly `username:password` | strong |
+| `vault_token` | modern Vault `hvs.`, `hvb.`, and `hvr.` tokens | strong |
 | `jwt` | three base64url segments **whose header really decodes to JSON with `alg`** | strong |
 | `private_key_block` | `-----BEGIN … PRIVATE KEY-----`, including one cut off by the line budget | strong |
 | `url_credentials` | a password embedded in a URL, `scheme://user:pass@host` | weak |
@@ -487,6 +490,14 @@ Precision is the product, so several obvious candidates are left out on purpose:
   *weak* confidence and under their own rule name, because they are identifiers rather than secrets
   and full-length ones appear in ordinary `aws sts get-caller-identity` output. Only `AKIA` and
   `ASIA` — the prefixes that really are access keys — report as strong.
+- **Kubernetes projected service-account tokens as a separate rule.** They are JWTs and are already
+  reported at strong confidence under `jwt`, whose structural check decodes the header and requires a
+  JSON `alg` field.
+- **Postgres and MySQL connection URLs as a separate rule.** URLs carrying a password are already
+  reported, at weak confidence, under `url_credentials`. A second strong rule would rename what users
+  already see and break allowlists that key on the old name.
+- **Legacy Vault `s.` tokens.** A two-character prefix, one character of which is a full stop, cannot
+  support a strong claim. Only the modern `hvs.`, `hvb.`, and `hvr.` forms are matched.
 - **Generic "high-entropy" strings.** A 32- or 40-character hex or base64 run with no surrounding
   context is a commit id, a checksum, a UUID, an image blob, or a minified bundle far more often than
   it is a key.
