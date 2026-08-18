@@ -518,6 +518,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "jdbc_url_password",
             "JDBC URL password",
             Confidence::Strong,
+            "Matches a password carried in a JDBC connection string, either as a `?password=` or `&password=` query parameter or as a `;password=` property. The literal `jdbc:` scheme is the anchor: without it this would be a generic `password=` matcher, which would fire on ordinary query strings and log lines. The value still has to survive the placeholder filter, so `password=${DB_PASS}` and `password=changeme` stay quiet.",
             r#"(?i)\bjdbc:[^\s]*[?&;]password=([^\s&#;"']+)"#,
         )
         .groups(&[1])
@@ -530,6 +531,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "docker_registry_auth",
             "Docker registry auth",
             Confidence::Strong,
+            "Matches the `\"auth\"` field of a Docker registry credential, which holds base64 of `username:password`. The base64 is decoded and has to contain exactly one `:` with a password half that looks like a credential; without that check the rule would fire on pasted image layers and on any base64 that happens to sit next to the word `auth`.",
             r#""auth"[ \t]*:[ \t]*"([A-Za-z0-9+/]{8,}={0,2})""#,
         )
         .groups(&[1])
@@ -540,6 +542,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "vault_token",
             "Vault token",
             Confidence::Strong,
+            "Matches the `hvs.`, `hvb.` and `hvr.` token prefixes followed by at least 24 characters. The legacy `s.` form is deliberately excluded: two characters of prefix, one of them a full stop, cannot carry a strong claim, and prose beginning `s.` is ordinary output.",
             r"\b(?:hvs|hvb|hvr)\.[A-Za-z0-9_-]{24,}",
         )
         .standalone(),
