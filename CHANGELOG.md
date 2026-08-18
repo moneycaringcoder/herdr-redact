@@ -12,6 +12,8 @@ at least one minor cycle.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-18
+
 ### Added
 
 - Tag-triggered release automation. Pushing `vX.Y.Z` runs the full suite on
