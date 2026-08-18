@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use redact::{
-    config, daemon, findings::Store, herdr::Herdr, model::PaneRef, render, setup, Result,
+    config, daemon, findings::Store, herdr::Herdr, model::PaneRef, render, scan::RotationGuidance,
+    setup, Result,
 };
 
 const USAGE: &str = "\
@@ -252,6 +253,12 @@ fn explain(args: &[String]) -> Result<()> {
         println!("Rule: {}", explanation.name);
         println!("Label: {}", explanation.label);
         println!("Confidence: {}", explanation.confidence.as_str());
+        match explanation.rotation {
+            RotationGuidance::Url(url) => println!("Rotation guidance: {url}"),
+            RotationGuidance::Exempt(reason) => {
+                println!("Rotation guidance: no provider page — {reason}")
+            }
+        }
         println!();
         for line in wrap(&explanation.text, 80) {
             println!("{line}");

@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -39,6 +39,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::findings::{Store, SUPPRESSIONS_NOTE_SUFFIX};
 use crate::model::{Alert, Calibration, Confidence, Finding, Report};
+use crate::scan::{RotationGuidance, Rules};
 use crate::{daemon, Result};
 
 /// A badge sits beside a branch or an agent name. Six display columns is the
@@ -562,6 +563,7 @@ struct Row {
     pane: String,
     preview: String,
     age: String,
+    rotation_url: Option<&'static str>,
     agent: Option<String>,
     cwd: Option<String>,
     foreground_process_when_first_seen: Option<String>,
@@ -579,6 +581,11 @@ fn row_of(finding: &Finding, now: u64) -> Row {
         },
         id: finding.short_id().to_string(),
         rule: finding.label.clone(),
+        rotation_url: if finding.confidence == Confidence::Strong {
+            rotation_url(&finding.pattern)
+        } else {
+            None
+        },
         // The agent name where herdr reports one, the pane id otherwise. The
         // store recorded it at the time of the sighting, so a renamed agent
         // does not rewrite history.
@@ -596,6 +603,30 @@ fn row_of(finding: &Finding, now: u64) -> Row {
         },
         preview: finding.preview.clone(),
         age: age(now, finding.first_seen),
+    }
+}
+
+fn rotation_url(name: &str) -> Option<&'static str> {
+    static BUILTIN_RULES: LazyLock<Rules> = LazyLock::new(Rules::builtin);
+    match BUILTIN_RULES.rotation_guidance(name) {
+        Some(RotationGuidance::Url(url)) => Some(url),
+        Some(RotationGuidance::Exempt(_)) | None => None,
+    }
+}
+
+fn push_rotation_url(out: &mut String, url: &str, width: usize) {
+    push_wrapped(out, "      ", "        ", "rotation guidance:", width);
+
+    // Guidance URLs are ASCII source literals. Split rather than truncate a
+    // long one: narrow panes still retain every character a user needs to copy.
+    debug_assert!(url.is_ascii());
+    let prefix = "        ";
+    let budget = width.saturating_sub(display_width(prefix)).max(1);
+    for chunk in url.as_bytes().chunks(budget) {
+        let chunk = std::str::from_utf8(chunk).expect("built-in guidance URLs are ASCII");
+        out.push_str(prefix);
+        out.push_str(chunk);
+        out.push('\n');
     }
 }
 
@@ -680,6 +711,9 @@ fn push_stacked(out: &mut String, rows: &[Row], width: usize, selected: Option<u
             ),
             width,
         );
+        if let Some(url) = row.rotation_url {
+            push_rotation_url(out, url, width);
+        }
         if let Some(agent) = &row.agent {
             push_wrapped(
                 out,
@@ -933,7 +967,7 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
     let rules: Vec<serde_json::Value> = rule_metadata
         .into_iter()
         .map(|(name, (label, confidence))| {
-            json!({
+            let mut rule = json!({
                 "id": name,
                 "name": name,
                 "shortDescription": {
@@ -942,7 +976,16 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
                 "properties": {
                     "confidence": confidence.as_str(),
                 },
-            })
+            });
+            // An exempt rule has no provider page to point at, and SARIF's
+            // `helpUri` is a URI: an empty string would be a worse answer than
+            // no key at all.
+            if let Some(url) = rotation_url(name) {
+                rule.as_object_mut()
+                    .expect("SARIF rule is an object")
+                    .insert("helpUri".to_string(), json!(url));
+            }
+            rule
         })
         .collect();
 

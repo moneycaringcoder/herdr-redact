@@ -115,6 +115,14 @@ pub fn rule_packs() -> &'static [RulePack] {
     &RULE_PACKS
 }
 
+/// Advisory remediation attached to a rule. This is rule metadata only: the
+/// scanner never follows a URL or acts on a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotationGuidance {
+    Url(&'static str),
+    Exempt(&'static str),
+}
+
 /// One compiled rule.
 #[derive(Debug)]
 struct Rule {
@@ -122,6 +130,7 @@ struct Rule {
     label: String,
     confidence: Confidence,
     explain: &'static str,
+    rotation: RotationGuidance,
     pack: Option<RulePack>,
     regex: Regex,
     /// Capture groups holding the value, most specific first; the first one that
@@ -146,6 +155,7 @@ impl Rule {
         label: &str,
         confidence: Confidence,
         explain: &'static str,
+        rotation: RotationGuidance,
         pattern: &str,
     ) -> Self {
         Self {
@@ -153,6 +163,7 @@ impl Rule {
             label: label.to_string(),
             confidence,
             explain,
+            rotation,
             pack: Some(DEFAULT_RULE_PACK),
             regex: Regex::new(pattern).expect("built-in pattern is valid"),
             groups: vec![0],
@@ -196,6 +207,7 @@ pub struct Explanation {
     pub label: String,
     pub confidence: Confidence,
     pub text: String,
+    pub rotation: RotationGuidance,
 }
 
 /// The compiled rule set: built-in provider patterns, the user's extra patterns,
@@ -252,6 +264,9 @@ impl Rules {
                     Confidence::Weak
                 },
                 explain: "This rule comes from the user's `patterns` configuration and has no built-in reasoning.",
+                rotation: RotationGuidance::Exempt(
+                    "Custom rules have no built-in provider; remediation depends on whoever issued the credential.",
+                ),
                 pack: None,
                 regex,
                 groups: vec![0],
@@ -304,6 +319,14 @@ impl Rules {
             .map(explanation_of)
     }
 
+    /// Returns advisory rotation metadata for one exact machine name.
+    pub fn rotation_guidance(&self, name: &str) -> Option<RotationGuidance> {
+        self.rules
+            .iter()
+            .find(|rule| rule.name == name)
+            .map(|rule| rule.rotation)
+    }
+
     /// Returns active rule explanations in declaration order, one per machine name.
     pub fn explanations(&self) -> Vec<Explanation> {
         let mut explanations = Vec::with_capacity(self.names.len());
@@ -333,6 +356,7 @@ fn explanation_of(rule: &Rule) -> Explanation {
         label: rule.label.clone(),
         confidence: rule.confidence,
         text: rule.explain.to_string(),
+        rotation: rule.rotation,
     }
 }
 
@@ -407,6 +431,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "AWS access key ID",
             Confidence::Strong,
             "Matches `AKIA` or `ASIA` followed by 16 uppercase base32-style characters. Those are the access-key prefixes, and a structural check rejects a tail made from one repeated character so redactions, banners, and placeholders do not fire.",
+            RotationGuidance::Url(
+                "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html",
+            ),
             r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",
         )
         .standalone()
@@ -423,6 +450,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "AWS principal ID (identifier, not a credential)",
             Confidence::Weak,
             "Matches the `AGPA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `ANVA`, and `APKA` identifier prefixes followed by 16 or 17 uppercase base32-style characters, rejecting a tail made from one repeated character. It is weak and separate because these are identifiers rather than credentials and full-length values appear in ordinary `aws sts get-caller-identity` and IAM output.",
+            RotationGuidance::Exempt(
+                "AWS principal IDs are identifiers, not credentials, so there is nothing to rotate.",
+            ),
             r"\b(?:AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16,17}",
         )
         .standalone()
@@ -434,6 +464,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "AWS secret access key",
             Confidence::Strong,
             "Matches exactly 40 base64 characters only beside the AWS secret access key name, because a bare 40-character base64 run would cause false positives.",
+            RotationGuidance::Url(
+                "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html",
+            ),
             r#"(?i)aws[_-]?secret[_-]?access[_-]?key["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})"#,
         )
         .groups(&[1]),
@@ -442,6 +475,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "GitHub token",
             Confidence::Strong,
             "Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 36 alphanumeric characters.",
+            RotationGuidance::Url(
+                "https://docs.github.com/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation",
+            ),
             r"\bgh[pousr]_[A-Za-z0-9]{36,}",
         )
         .standalone(),
@@ -450,6 +486,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "GitHub fine-grained token",
             Confidence::Strong,
             "Matches `github_pat_`, a 22-character alphanumeric component, an underscore, and a 59-character alphanumeric component.",
+            RotationGuidance::Url(
+                "https://docs.github.com/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
+            ),
             r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}",
         )
         .standalone(),
@@ -458,6 +497,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Anthropic API key",
             Confidence::Strong,
             "Matches `sk-ant-` followed by at least 32 characters from the alphanumeric, underscore, and hyphen alphabet.",
+            RotationGuidance::Url("https://console.anthropic.com/settings/keys"),
             r"\bsk-ant-[A-Za-z0-9_-]{32,}",
         )
         .standalone(),
@@ -468,6 +508,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "OpenAI API key",
             Confidence::Strong,
             "Matches `sk-proj-`, `sk-svcacct-`, or `sk-admin-` followed by at least 20 full-alphabet characters, or `sk-` followed by exactly 48 alphanumeric characters. Requiring the complete token alphabet keeps prose such as `sk-learn` and `sk-ms-version` out.",
+            RotationGuidance::Url("https://platform.openai.com/api-keys"),
             r"\bsk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{48})",
         )
         .standalone(),
@@ -476,6 +517,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Stripe live secret key",
             Confidence::Strong,
             "Matches only live `sk_live_` and `rk_live_` keys followed by at least 20 alphanumeric characters. Test keys are deliberately excluded because they live in public documentation, CI fixtures, and sample apps, and firing on them would be cry-wolf noise.",
+            RotationGuidance::Url("https://dashboard.stripe.com/apikeys"),
             r"\b(?:sk|rk)_live_[A-Za-z0-9]{20,}",
         )
         .standalone(),
@@ -484,6 +526,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Slack token",
             Confidence::Strong,
             "Matches `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, or `xoxs-` followed by at least 12 alphanumeric or hyphen characters.",
+            RotationGuidance::Url("https://api.slack.com/authentication/rotation"),
             r"\bxox[baprs]-[A-Za-z0-9-]{12,}",
         )
         .standalone(),
@@ -492,6 +535,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Google API key",
             Confidence::Strong,
             "Matches `AIza` followed by exactly 35 characters from the alphanumeric, underscore, and hyphen alphabet.",
+            RotationGuidance::Url("https://console.cloud.google.com/apis/credentials"),
             r"\bAIza[A-Za-z0-9_-]{35}",
         )
         .standalone(),
@@ -502,6 +546,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Google OAuth client secret",
             Confidence::Strong,
             "Matches `GOCSPX-` followed by exactly 28 characters from the alphanumeric, underscore, and hyphen alphabet; the prefix is what makes the rule precise enough to ship.",
+            RotationGuidance::Url("https://console.cloud.google.com/apis/credentials"),
             r"\bGOCSPX-[A-Za-z0-9_-]{28}",
         )
         .standalone(),
@@ -512,6 +557,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "JSON Web Token",
             Confidence::Strong,
             "Matches three sufficiently long base64url segments beginning with `eyJ`, then fires only when the header segment base64url-decodes to a JSON object carrying a string `alg`. Version strings, file names, and base64 blobs that merely contain two dots are rejected.",
+            RotationGuidance::Exempt(
+                "JWT issuers control revocation, so the correct action depends on whoever issued the token.",
+            ),
             r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
         )
         .standalone()
@@ -523,6 +571,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Private key block",
             Confidence::Strong,
             "Matches a private-key opening marker and, when present, its body and closing marker. The closing block is optional so a key cut off by the pane's line budget still reports.",
+            RotationGuidance::Exempt(
+                "Private keys have no single provider; replace or revoke trust wherever the corresponding public key is authorized.",
+            ),
             r"-----BEGIN [A-Z0-9 ]{0,32}PRIVATE KEY(?: BLOCK)?-----(?s:.*?-----END [A-Z0-9 ]{0,32}PRIVATE KEY(?: BLOCK)?-----)?",
         ),
         Rule::new(
@@ -530,6 +581,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Slack webhook URL",
             Confidence::Strong,
             "Matches the Slack webhook host and services path followed by three alphanumeric path components of at least 8, 8, and 20 characters.",
+            RotationGuidance::Url("https://api.slack.com/apps"),
             r"https://hooks\.slack\.com/services/[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}",
         ),
         Rule::new(
@@ -537,6 +589,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "npm access token",
             Confidence::Strong,
             "Matches `npm_` followed by exactly 36 alphanumeric characters.",
+            RotationGuidance::Url("https://www.npmjs.com/settings/~/tokens"),
             r"\bnpm_[A-Za-z0-9]{36}",
         )
         .standalone(),
@@ -545,6 +598,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "PyPI API token",
             Confidence::Strong,
             "Matches `pypi-AgEIcHlwaS5vcmc` followed by at least 40 characters from the alphanumeric, underscore, and hyphen alphabet.",
+            RotationGuidance::Url("https://pypi.org/manage/account/token/"),
             r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{40,}",
         )
         .standalone(),
@@ -553,6 +607,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "SendGrid API key",
             Confidence::Strong,
             "Matches `SG.`, a 22-character component, a dot, and a 43-character component, with both components restricted to the alphanumeric, underscore, and hyphen alphabet.",
+            RotationGuidance::Url("https://app.sendgrid.com/settings/api_keys"),
             r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
         )
         .standalone(),
@@ -561,6 +616,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "GitLab personal access token",
             Confidence::Strong,
             "Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet.",
+            RotationGuidance::Url(
+                "https://docs.gitlab.com/user/profile/personal_access_tokens/",
+            ),
             r"\bglpat-[A-Za-z0-9_-]{20,}",
         )
         .standalone(),
@@ -569,6 +627,7 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Hugging Face token",
             Confidence::Strong,
             "Matches `hf_` followed by at least 34 alphanumeric characters.",
+            RotationGuidance::Url("https://huggingface.co/settings/tokens"),
             r"\bhf_[A-Za-z0-9]{34,}",
         )
         .standalone(),
@@ -583,6 +642,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "age secret key",
             Confidence::Strong,
             "Matches the private half of an age keypair: `AGE-SECRET-KEY-1` followed by exactly 58 Bech32 characters. The public `age1` recipient is deliberately excluded because it is not a secret, and the body omits `1`, `B`, `I`, and `O` as required by that alphabet.",
+            RotationGuidance::Exempt(
+                "age keys have no provider or revocation service; replace the recipient wherever the public key is trusted.",
+            ),
             r"\bAGE-SECRET-KEY-1[02-9A-HJ-NP-Z]{58}\b",
         )
         .standalone(),
@@ -594,6 +656,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "JDBC URL password",
             Confidence::Strong,
             "Matches a password carried in a JDBC connection string, either as a `?password=` or `&password=` query parameter or as a `;password=` property. The literal `jdbc:` scheme is the anchor: without it this would be a generic `password=` matcher, which would fire on ordinary query strings and log lines. The value still has to survive the placeholder filter, so `password=${DB_PASS}` and `password=changeme` stay quiet.",
+            RotationGuidance::Exempt(
+                "The database provider is not encoded in a JDBC password, so rotation depends on the database that issued it.",
+            ),
             r#"(?i)\bjdbc:[^\s]*[?&;]password=([^\s&#;"']+)"#,
         )
         .groups(&[1])
@@ -607,6 +672,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Docker registry auth",
             Confidence::Strong,
             "Matches the `\"auth\"` field of a Docker registry credential, which holds base64 of `username:password`. The base64 is decoded and has to contain exactly one `:` with a password half that looks like a credential; without that check the rule would fire on pasted image layers and on any base64 that happens to sit next to the word `auth`.",
+            RotationGuidance::Exempt(
+                "The registry is not encoded in Docker auth metadata, so rotation depends on the registry that issued the credential.",
+            ),
             r#""auth"[ \t]*:[ \t]*"([A-Za-z0-9+/]{8,}={0,2})""#,
         )
         .groups(&[1])
@@ -618,6 +686,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Vault token",
             Confidence::Strong,
             "Matches the `hvs.`, `hvb.` and `hvr.` token prefixes followed by at least 24 characters. The legacy `s.` form is deliberately excluded: two characters of prefix, one of them a full stop, cannot carry a strong claim, and prose beginning `s.` is ordinary output.",
+            RotationGuidance::Url(
+                "https://developer.hashicorp.com/vault/docs/commands/token/revoke",
+            ),
             r"\b(?:hvs|hvb|hvr)\.[A-Za-z0-9_-]{24,}",
         )
         .standalone(),
@@ -630,6 +701,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "URL with embedded credentials",
             Confidence::Weak,
             "Matches only the password portion of a scheme-based URL containing user information. It is weak because connection-string examples commonly have this shape, and the password must pass the placeholder filter.",
+            RotationGuidance::Exempt(
+                "The URL can refer to any issuer, so rotation depends on the service that issued the password.",
+            ),
             r"\b[a-zA-Z][a-zA-Z0-9+.-]{1,15}://[^\s/:@]{1,64}:([^\s/:@]{1,128})@",
         )
         .groups(&[1])
@@ -642,6 +716,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "HTTP bearer token",
             Confidence::Weak,
             "Matches at least 16 credential-alphabet characters following an `Authorization: Bearer` header. It is weak because agents commonly print that header in curl commands, and the captured token must pass the placeholder filter.",
+            RotationGuidance::Exempt(
+                "Bearer tokens have no provider-specific shape, so revocation depends on whoever issued the token.",
+            ),
             r"(?i)authorization[ \t]*:[ \t]*bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})",
         )
         .groups(&[1])
@@ -659,6 +736,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
                 "Secret-looking assignment",
                 Confidence::Weak,
                 "Matches secret-looking shell assignments and YAML or JSON-style mappings anchored at the start of a line. It requires a secret-ish name segment, rejects a bare `*_KEY` because names such as `GPG_KEY` and `CACHE_KEY` are ordinary output, and drops placeholder values. The mapping form requires whitespace after the colon so ARN and URL text does not fire.",
+                RotationGuidance::Exempt(
+                    "Generic assignments do not identify an issuer, so rotation depends on whoever issued the credential.",
+                ),
                 r#"(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))"#,
             )
             .groups(&[2, 3, 4])
@@ -673,6 +753,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
                 "Secret-looking assignment",
                 Confidence::Weak,
                 "Matches secret-looking shell assignments and YAML or JSON-style mappings anchored at the start of a line. It requires a secret-ish name segment, rejects a bare `*_KEY` because names such as `GPG_KEY` and `CACHE_KEY` are ordinary output, and drops placeholder values. The mapping form requires whitespace after the colon so ARN and URL text does not fire.",
+                RotationGuidance::Exempt(
+                    "Generic assignments do not identify an issuer, so rotation depends on whoever issued the credential.",
+                ),
                 r#"(?m)^[ \t-]*"?([A-Za-z_][A-Za-z0-9_.-]*)"?[ \t]*:[ \t]+(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))"#,
             )
             .groups(&[2, 3, 4])
@@ -687,6 +770,9 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Multi-line structured credential",
             Confidence::Weak,
             "Matches a credential-shaped key whose value continues onto following lines, as a GCP service-account key, a Kubernetes secret manifest or a YAML block scalar prints one. The key must pass the same secret-ish name test the single-line assignment rule uses, the join is bounded to eight continuation lines and 4096 characters, and the joined value still has to survive the placeholder filter. It is weak because a key-and-value line is the shape of almost all structured output; where the joined value turns out to be something a strong rule validates on its own merits, that rule reports it instead. A bare `auth` key deliberately cannot start a join, because `AUTH` is a key qualifier rather than a secret-ish name and the single-line Docker rule already covers that shape.",
+            RotationGuidance::Exempt(
+                "Multi-line credential shapes do not identify an issuer, so rotation depends on whoever issued the credential.",
+            ),
             r#"(?m)^[ \t-]*"?([A-Za-z_][A-Za-z0-9_.-]*)"?[ \t]*:[ \t]*([^\r\n]*)$"#,
         ));
     }

@@ -126,6 +126,8 @@ const WIDTHS: [usize; 6] = [MIN_COLUMNS, 24, 40, 47, 80, 200];
 /// never appears in any output.
 const FAKE_SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
 const FAKE_SECRET_PREVIEW: &str = "AKIA\u{2026}MPLE";
+const AWS_ROTATION_URL: &str =
+    "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html";
 
 /// The report's own clock. Fixed, so ages are deterministic.
 const NOW: u64 = 1_700_000_000;
@@ -341,6 +343,47 @@ fn every_finding_survives_every_width() {
             );
         }
     }
+}
+
+#[test]
+fn stacked_strong_finding_shows_rotation_link_without_changing_the_table() {
+    let report = Report {
+        findings: vec![finding("a1b2c3", "AWS access key ID", "claude")],
+        panes_scanned: 1,
+        generated_at: NOW,
+        ..Report::default()
+    };
+
+    let stacked = report_text(&report, 40);
+    let compact: String = stacked.chars().filter(|ch| !ch.is_whitespace()).collect();
+    assert!(
+        compact.contains(AWS_ROTATION_URL),
+        "rotation URL was lost while wrapping:\n{stacked}"
+    );
+    assert!(
+        flatten(&stacked).contains("rotation guidance:"),
+        "{stacked}"
+    );
+
+    let table = report_text(&report, 80);
+    assert!(!table.contains("rotation guidance:"), "{table}");
+    assert!(!table.contains(AWS_ROTATION_URL), "{table}");
+}
+
+#[test]
+fn stacked_strong_finding_without_provider_guidance_omits_it_cleanly() {
+    let mut found = finding("a1b2c3", "JSON Web Token", "claude");
+    found.pattern = "jwt".to_string();
+    let report = Report {
+        findings: vec![found],
+        panes_scanned: 1,
+        generated_at: NOW,
+        ..Report::default()
+    };
+
+    let stacked = report_text(&report, 40);
+    assert!(!stacked.contains("rotation guidance:"), "{stacked}");
+    assert!(!stacked.contains("https://"), "{stacked}");
 }
 
 #[test]
@@ -725,6 +768,22 @@ fn the_sarif_snapshot_carries_findings_disposition_provenance_and_scan_quality()
     assert_eq!(
         rule_ids,
         ["aws_access_key_id", "env_assignment", "stripe_secret_key"]
+    );
+
+    // `aws_access_key_id` and `stripe_secret_key` name a provider revocation
+    // page; `env_assignment` is exempt, so it has no page to carry.
+    let rules = run["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("driver rules");
+    assert_eq!(
+        rules[0]["helpUri"],
+        "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html"
+    );
+    assert_eq!(rules[2]["helpUri"], "https://dashboard.stripe.com/apikeys");
+    assert!(
+        rules[1].get("helpUri").is_none(),
+        "an exempt rule carries a helpUri: {}",
+        rules[1]
     );
 
     let results = run["results"].as_array().expect("SARIF results");
