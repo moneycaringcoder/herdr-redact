@@ -262,7 +262,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     reported_notes.clone_from(&report.notes);
 
                     let quiet = quiet_until().is_some();
-                    notify_new(connected, &config, &mut store, quiet);
+                    notify_new(connected, &config, &panes, &mut store, quiet);
                     let plan = badge_plan_for_cycle(
                         &lock(&active).clone(),
                         &report,
@@ -298,6 +298,11 @@ pub fn run(args: &[String]) -> Result<()> {
 
 /// Compile the rules used by every scanning path, preserving warnings that
 /// would otherwise make a degraded rule set look complete.
+///
+/// Notes are de-duplicated because overlays mean this is called once per
+/// distinct effective configuration rather than once per cycle. Two panes whose
+/// overlays both carry the same bad regex are one problem, and reporting it
+/// twice would suggest two.
 fn rules_for_scan(config: &Config, notes: &mut Vec<String>) -> Rules {
     // A rule the user typed that will not compile is fatal for `--rules`, where
     // they are looking right at it. A scanning path must not stop protecting
@@ -305,16 +310,24 @@ fn rules_for_scan(config: &Config, notes: &mut Vec<String>) -> Rules {
     let rules = match Rules::compile(config) {
         Ok(rules) => rules,
         Err(err) => {
-            notes.push(format!(
+            let note = format!(
                 "a configured pattern did not compile ({err}); scanning with the built-in rules \
                  only — the rules you added are NOT active"
-            ));
+            );
+            if !notes.contains(&note) {
+                notes.push(note);
+            }
             Rules::builtin()
         }
     };
     // A setting the user believes is protecting them and is not is exactly the
-    // kind of silence this plugin cannot afford.
-    notes.extend(rules.notes.iter().cloned());
+    // kind of silence this plugin cannot afford. `config.notes` carries what the
+    // overlay parser had to say, which is the same class of silence.
+    for note in config.notes.iter().chain(&rules.notes) {
+        if !notes.contains(note) {
+            notes.push(note.clone());
+        }
+    }
     rules
 }
 
@@ -352,7 +365,12 @@ pub fn scan_cycle_within(
     let now = crate::model::now();
     let mut notes = Vec::new();
 
-    let rules = rules_for_scan(config, &mut notes);
+    // Cache entries are keyed by the complete effective Config, never by pane
+    // identity or matcher. Equal effective configurations share compilation;
+    // different overlays therefore cannot leak a rule set across panes.
+    let base_config = config.base();
+    let base_rules = rules_for_scan(&base_config, &mut notes);
+    let mut rule_sets = HashMap::from([(base_config, base_rules)]);
 
     // A findings pane that scans itself reports its own masked previews for
     // ever, and every one of them looks like a real finding.
@@ -365,9 +383,14 @@ pub fn scan_cycle_within(
 
     // Split before reading, so the rotation below is over panes we actually mean
     // to read rather than over the whole session.
-    let (readable, skipped): (Vec<&PaneRef>, Vec<&PaneRef>) = panes
-        .iter()
-        .partition(|pane| should_scan(pane, config, own_pane.as_deref()));
+    let (readable, skipped): (Vec<&PaneRef>, Vec<&PaneRef>) = panes.iter().partition(|pane| {
+        if config.overlays.is_empty() {
+            should_scan(pane, config, own_pane.as_deref())
+        } else {
+            let effective = config.effective_for(pane);
+            should_scan(pane, &effective, own_pane.as_deref())
+        }
+    });
     let skipped = skipped.len();
 
     // A cycle has to finish. Reading is one round trip per pane, and on a busy
@@ -395,11 +418,22 @@ pub fn scan_cycle_within(
             continue;
         }
         cursor = (index + 1) % readable.len();
-        let backfill = config.backfill_lines > 0 && store.needs_backfill(&pane.pane_id);
+        let effective_owned = (!config.overlays.is_empty()).then(|| config.effective_for(pane));
+        let effective = effective_owned.as_ref().unwrap_or(config);
+        // Backfill depth is a scalar like any other, so an overlay may set it:
+        // a repository whose panes hold a long history can ask for a deeper
+        // first read without changing what every other workspace does.
+        let backfill = effective.backfill_lines > 0 && store.needs_backfill(&pane.pane_id);
         let lines = if backfill {
-            config.backfill_lines
+            effective.backfill_lines
         } else {
-            config.lines
+            effective.lines
+        };
+        let rules = if let Some(rules) = rule_sets.get(effective) {
+            rules
+        } else {
+            let compiled = rules_for_scan(effective, &mut notes);
+            rule_sets.entry(effective.clone()).or_insert(compiled)
         };
         let text = match client.read_pane(&pane.pane_id, lines) {
             Ok(text) => text,
@@ -462,7 +496,7 @@ pub fn scan_cycle_within(
             // stopped looking, and a scan that stopped looking must be able to
             // say so. Silence there would mean a flood of weak matches in one
             // pane could hide a real key with nothing to show for it.
-            let scanned = scan::scan_reporting(&text.text, &rules, store.key());
+            let scanned = scan::scan_reporting(&text.text, rules, store.key());
             for note in scanned.notes {
                 notes.push(format!("pane {}: {note}", pane.pane_id));
             }
@@ -651,13 +685,33 @@ pub fn new_notes(previous: &[String], current: &[String]) -> Vec<String> {
 ///
 /// The queue is drained whether notifications are disabled or quiet is active,
 /// so neither switch builds a backlog that fires when warnings become visible.
-fn notify_new(client: &mut Herdr, config: &Config, store: &mut Store, quiet: bool) {
+fn notify_new(
+    client: &mut Herdr,
+    config: &Config,
+    panes: &[PaneRef],
+    store: &mut Store,
+    quiet: bool,
+) {
     let fresh = store.take_new_findings();
-    if quiet || !config.notify {
+    // Quiet is global, so it short-circuits here. `notify` is not: an overlay
+    // may turn notifications on for one workspace and off for another, so that
+    // decision belongs per finding, below. Either way the queue is already
+    // drained, so nothing backs up to fire the moment warnings return.
+    if quiet {
         return;
     }
     for finding in fresh {
-        if !store.claim_notification(&finding) {
+        let notify = panes
+            .iter()
+            .find(|pane| pane.pane_id == finding.pane_id)
+            .map_or(config.notify, |pane| {
+                if config.overlays.is_empty() {
+                    config.notify
+                } else {
+                    config.effective_for(pane).notify
+                }
+            });
+        if !notify || !store.claim_notification(&finding) {
             continue;
         }
         let (title, body) = toast(&finding);

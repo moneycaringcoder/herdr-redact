@@ -25,12 +25,12 @@ Everything else about it is built to make that safe:
 - **Background scanning is opt-in.** A fresh install starts nothing and reads nothing on its own.
   Nothing is read until you either enable the watcher or run a scan yourself, and disabling the
   watcher stops the reading and clears every badge it set. To be exact about which of those is which:
-  `--enable` starts the background watcher, and `--once`, `--json` and the **Redact: findings** pane
-  each read panes for as long as you have them open, whether or not the watcher is running. A plugin
-  action you invoke is you asking it to look.
+  `--enable` starts the background watcher, and `--once`, `--json`, `--sarif` and the **Redact:
+  findings** pane each read panes for as long as you have them open, whether or not the watcher is
+  running. A plugin action you invoke is you asking it to look.
 - **No secret is ever written anywhere.** Not to a log, not to the state file, not into a toast, not
-  into the JSON output, not into a badge. A finding records the rule that fired, the pane it fired
-  in, the agent and working directory, and the foreground process name and pid herdr reported when
+  into the JSON or SARIF output, not into a badge. A finding records the rule that fired, the pane it
+  fired in, the agent and working directory, and the foreground process name and pid herdr reported when
   the finding was first seen. It also records the length of the value, a keyed fingerprint used only
   to recognise the same finding again, and a **masked preview** showing at most the first four and the
   last four characters, and never more than a third of the value. A short value renders as a bare `…`
@@ -289,6 +289,7 @@ you leave one out, findings at that level simply show nothing.
 | **Redact: scan now** | One-shot scan of every agent pane |
 | **Redact: calibrate** | Shows what the active rules would have fired on, without storing findings or setting badges |
 | **Redact: JSON snapshot** | The same findings, machine-readable, for scripting |
+| **Redact: SARIF snapshot** | SARIF 2.1.0 findings for security review and incident write-ups |
 | **Redact: list detection rules** | The rules that are actually active, built-in and yours |
 | **Redact: acknowledge all findings** | Clears every current warning |
 | **Redact: enable / disable / toggle pane watcher** | Starts or stops background scanning |
@@ -311,8 +312,12 @@ Scanning:
   --once              Scan every agent pane once, print the findings, exit
   --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
+  --sarif             Print the same findings as SARIF 2.1.0 and exit
   --watch             Live findings pane (a acknowledges, s permanently suppresses)
-  --rules             List the active detection rules and exit
+  --rules [PANE|PATH] List active rules for the base, pane, or working directory
+                      A context containing `:` is read as a pane id; anything
+                      else is read as a working-directory path. Which one was
+                      used is reported, so a mistyped pane id is visible
   --explain <RULE>    Explain one active detection rule and exit
 
 Findings:
@@ -351,6 +356,11 @@ anywhere: findings record the rule name, the pane, and a masked preview.
 Options may come before or after the verb, so `redact --lines 800 --once` and
 `redact --once --lines 800` are the same command.
 
+`redact --sarif` prints SARIF 2.1.0 to stdout, so redirect it with a shell when a file is needed:
+`redact --sarif > findings.sarif`. Values use exactly the same masked previews as every other output
+surface. The export carries the public finding id as a SARIF partial fingerprint and never includes
+the keyed digest.
+
 `redact --suppress <ID>` is the command-line equivalent of pressing `s`. `redact --suppressions`
 lists only each active rule name and a short keyed digest, never a preview. Suppression is permanent
 until `redact --forget` clears it, matches exactly one value for one rule, and applies globally across
@@ -384,7 +394,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | --- | --- | --- |
 | `interval_seconds` | `5` | How often the watcher and the findings pane rescan. Clamped to 1–3600. `--interval <SECS>` overrides it for one run. |
 | `lines` | `400` | Lines of output read per pane per cycle. Clamped to 1–20000. Bigger means more history and more to scan. `--lines <N>` overrides it for one run. |
-| `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once` and `--json` never backfill, because they are interactive commands whose latency you are waiting on. |
+| `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once`, `--json` and `--sarif` never backfill, because they are interactive commands whose latency you are waiting on. |
 | `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
 | `rule_packs` | `["default"]` | Compiled-in rule packs to add. The `default` pack is always active; `[]` therefore means default only, never no scanning. Unknown names produce a note and are ignored. |
@@ -393,6 +403,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | `allowlist` | `[]` | Regexes that suppress a finding. A finding is dropped when one matches either the value or the line it was found on. |
 | `ignore_panes` | `[]` | Pane ids never read at all. The escape hatch for a pane that is deliberately full of test credentials. |
 | `max_findings` | `500` | Cap on stored findings, so one pathological pane cannot grow the state file without bound. Oldest acknowledged findings are dropped first. |
+| `overlays` | `[]` | Pane-context overrides selected by workspace id, workspace label, or working-directory path prefix. |
 
 A config file that still sets `entropy` is ignored, exactly as any unknown key is.
 
@@ -431,8 +442,70 @@ you are looking right at it, and a rule silently dropped is a rule you think is 
 scanning path, on the other hand, falls back to the built-in rules and says so in its notes, because
 one bad line in a config file must not be able to stop the scanner.
 
-`redact --rules` prints what is actually active, which is the answer to "is my pattern working" that
-does not involve trusting this README.
+`redact --rules` prints the base rule set. Pass a current pane id
+(`redact --rules w1:p2`) or a working-directory path
+(`redact --rules /home/me/repos/company-app`) to print the effective rules for
+that context, which answers "is my pattern working here" without trusting this
+README.
+
+The two are told apart by a single rule: **a context containing a `:` is read as
+a pane id, and anything else is read as a working-directory path.** So
+`redact --rules myword` is a relative-path lookup, not a pane lookup, and it
+matches no overlay. Which reading was used is printed before the listing, so a
+pane id typed wrongly shows up as a path rather than as an empty result.
+
+### Per-workspace and per-repository overlays
+
+An overlay has a `match` object containing exactly one of `workspace_id`,
+`workspace_label`, or `path_prefix`, plus any of the optional configuration keys
+from the table above. A path prefix is matched against the pane working
+directory reported by `session.snapshot`; redact never walks the working tree or
+looks for a `.git` directory.
+
+This configuration keeps a personal-key detector active everywhere, but
+allowlists its distinctive test value in a noisy company repository. A pane in
+the personal repository still reports the same value:
+
+```json
+{
+  "patterns": [
+    {
+      "name": "personal_api_key",
+      "label": "Personal API key",
+      "regex": "\\bpersonal_pk_[A-Za-z0-9]{24}\\b"
+    }
+  ],
+  "overlays": [
+    {
+      "match": {
+        "path_prefix": "/home/me/work/company-app"
+      },
+      "allowlist": [
+        "\\bpersonal_pk_EXAMPLEEXAMPLEEXAMPLE\\b"
+      ],
+      "notify": false
+    }
+  ]
+}
+```
+
+The other matcher forms are `"match": {"workspace_id": "w3"}` and
+`"match": {"workspace_label": "Company"}`.
+
+Overlay order is significant. For each scalar (`interval_seconds`, `lines`,
+`scan_all_panes`, `env_assignments`, `notify`, and `max_findings`), the first
+matching overlay that sets it wins. Lists (`patterns`, `allowlist`, and
+`ignore_panes`) from **all** matching overlays append to the base lists in file
+order; overlays never replace a list. Path prefixes are also applied in file
+order, not longest-prefix order, so a matching short prefix followed by a
+matching longer prefix contributes both lists in that declared order.
+
+A malformed overlay is ignored with a note while the top-level configuration
+continues to scan. It never turns a configuration typo into a dead scanner. An
+empty or whitespace-only `path_prefix` counts as malformed for that purpose:
+every path starts with the empty one, so honouring it would silently apply the
+overlay to every pane in the session. There is no catch-all matcher, on purpose
+— an overlay that matches more than you meant looks exactly like one that works.
 
 ## Widening the scan
 

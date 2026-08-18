@@ -28,6 +28,17 @@ at least one minor cycle.
   scheduled and manual only, it is not a required check, and a red canary is a
   signal to read herdr's recent changes rather than a reason to hold a pull
   request.
+- Per-workspace and per-repository configuration, through an `overlays` list.
+  An overlay matches on the workspace id, the workspace label, or a prefix of
+  the pane's working directory, and carries the same keys the top level does, so
+  the noisy repository can silence one pattern without weakening the scan
+  everywhere else. Scalars take the first matching overlay that names them and
+  lists append from every match, because an overlay that quietly replaced your
+  allowlist would be a silent hole. An empty path prefix is rejected as
+  malformed rather than honoured as a catch-all: it would match every pane while
+  the user believed their overlay was scoped. `redact --rules <pane-or-path>`
+  prints the rules actually in force for that context, since an overlay system
+  whose result cannot be printed is one nobody can debug.
 - A finding now records where it came from, not just which pane it appeared in:
   the agent, the pane's working directory, and the name and pid of the
   foreground process at the moment the finding was first seen. It shows in the

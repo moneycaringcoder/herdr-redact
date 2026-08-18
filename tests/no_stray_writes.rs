@@ -296,6 +296,66 @@ fn a_full_scan_writes_nothing_outside_the_state_directory() {
 }
 
 #[test]
+fn a_sarif_run_writes_nothing_outside_the_state_directory() {
+    let _guard = TEST_LOCK.lock().expect("test lock");
+    let home = std::env::temp_dir().join(format!("redact-sarif-writes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let state = home.join("state");
+    let config_dir = home.join("config");
+    let workdir = home.join("work");
+    for dir in [&state, &config_dir, &workdir] {
+        std::fs::create_dir_all(dir).expect("sandbox");
+    }
+    std::fs::write(workdir.join("Cargo.toml"), b"[package]\n").expect("work file");
+    std::fs::write(workdir.join(".env"), b"AWS_SECRET_ACCESS_KEY=nope\n").expect("work file");
+    std::fs::write(config_dir.join("config.json"), b"{\"lines\": 200}\n").expect("config");
+
+    let server = TestServer::start();
+    let before = fingerprint(&home);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_redact"))
+        .current_dir(&workdir)
+        .arg("--sarif")
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("xdg-state"))
+        .env("XDG_CONFIG_HOME", home.join("xdg-config"))
+        .env("HERDR_PLUGIN_STATE_DIR", &state)
+        .env("HERDR_PLUGIN_CONFIG_DIR", &config_dir)
+        .env("HERDR_SOCKET_PATH", &server.path)
+        .env("HERDR_PLUGIN_ID", "test.redact")
+        .env_remove("HERDR_PANE_ID")
+        .output()
+        .expect("run --sarif");
+    assert!(
+        output.status.success(),
+        "--sarif failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sarif: Value = serde_json::from_slice(&output.stdout).expect("--sarif did not print JSON");
+    assert_eq!(sarif["version"], "2.1.0");
+    assert!(
+        !sarif["runs"][0]["results"]
+            .as_array()
+            .expect("SARIF results")
+            .is_empty(),
+        "the SARIF scan found nothing, so this proves nothing"
+    );
+
+    let after = fingerprint(&home);
+    let written = changed(&before, &after);
+    let strays: Vec<&PathBuf> = written
+        .iter()
+        .filter(|path| !path.starts_with(&state))
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "--sarif wrote outside its own state directory: {strays:?}"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn calibrating_writes_nothing_at_all() {
     let _guard = TEST_LOCK.lock().expect("test lock");
     let home = std::env::temp_dir().join(format!("redact-calibrate-writes-{}", std::process::id()));

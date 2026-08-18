@@ -43,8 +43,7 @@ fn every_builtin_rule_has_a_url_or_an_audited_exemption() {
         "url_credentials",
     ];
 
-    let expected_exemptions: BTreeSet<_> =
-        EXEMPT_RULES.into_iter().map(str::to_string).collect();
+    let expected_exemptions: BTreeSet<_> = EXEMPT_RULES.into_iter().map(str::to_string).collect();
     let mut actual_exemptions = BTreeSet::new();
     for explanation in Rules::builtin().explanations() {
         match explanation.rotation {

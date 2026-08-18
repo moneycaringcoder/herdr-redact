@@ -2,7 +2,12 @@
 //!
 //! Verb dispatch only; every verb is implemented in the library crate.
 
-use redact::{config, daemon, findings::Store, render, scan::RotationGuidance, setup, Result};
+use std::path::{Path, PathBuf};
+
+use redact::{
+    config, daemon, findings::Store, herdr::Herdr, model::PaneRef, render, scan::RotationGuidance,
+    setup, Result,
+};
 
 const USAGE: &str = "\
 redact — credential warnings for herdr agent panes
@@ -13,8 +18,12 @@ Scanning:
   --once              Scan every agent pane once, print the findings, exit
   --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
+  --sarif             Print the same findings as SARIF 2.1.0 and exit
   --watch             Live findings pane (a acknowledges, s permanently suppresses)
-  --rules             List the active detection rules and exit
+  --rules [PANE|PATH] List active rules for the base, pane, or working directory
+                      A context containing `:` is read as a pane id; anything
+                      else is read as a working-directory path. Which one was
+                      used is reported, so a mistyped pane id is visible
   --explain <RULE>    Explain one active detection rule and exit
 
 Findings:
@@ -91,6 +100,9 @@ fn verb_of(args: &[String]) -> &str {
         if arg.starts_with("--explain=") {
             return "--explain";
         }
+        if arg.starts_with("--rules=") {
+            return "--rules";
+        }
         return arg;
     }
     "--once"
@@ -102,8 +114,9 @@ fn run(args: &[String]) -> Result<()> {
         "--once" => render::run_once(&config::load_with_args(args)?),
         "--calibrate" => render::run_calibrate(&config::load_with_args(args)?),
         "--json" => render::run_json(&config::load_with_args(args)?),
+        "--sarif" => render::run_sarif(&config::load_with_args(args)?),
         "--watch" => render::run_watch(&config::load_with_args(args)?),
-        "--rules" => rules(&config::load_with_args(args)?),
+        "--rules" => rules(args, &config::load_with_args(args)?),
         "--explain" => explain(args),
         "--ack" => acknowledge(args),
         "--suppress" => suppress(args),
@@ -134,8 +147,31 @@ fn run(args: &[String]) -> Result<()> {
 
 /// The active rule set, so a user can see what is really protecting them rather
 /// than what the README says is.
-fn rules(config: &config::Config) -> Result<()> {
-    let rules = redact::scan::Rules::compile(config)?;
+fn rules(args: &[String], config: &config::Config) -> Result<()> {
+    let context = optional_rules_context(args)?;
+    // Say which reading was used. `--rules myword` is a path lookup that
+    // matches nothing, and without this line it is indistinguishable from a
+    // pane id whose overlays happen to add nothing.
+    if let Some(value) = context.as_deref() {
+        eprintln!("redact: {}", context_interpretation(value));
+    }
+    let effective = match context.as_deref() {
+        None => config.base(),
+        Some(value) if is_path_context(value) => {
+            let pane = path_context(value);
+            config.effective_for(&pane)
+        }
+        Some(pane_id) => {
+            let mut client = Herdr::connect()?;
+            let panes = client.panes()?;
+            let pane = panes
+                .iter()
+                .find(|pane| pane.pane_id == pane_id)
+                .ok_or_else(|| format!("no current pane has id `{pane_id}`"))?;
+            config.effective_for(pane)
+        }
+    };
+    let rules = redact::scan::Rules::compile(&effective)?;
     if rules.names.is_empty() {
         println!("redact: no rules are active.");
         return Ok(());
@@ -157,6 +193,55 @@ fn rules(config: &config::Config) -> Result<()> {
         eprintln!("redact: {note}");
     }
     Ok(())
+}
+
+fn optional_rules_context(args: &[String]) -> Result<Option<String>> {
+    for (index, arg) in args.iter().enumerate() {
+        if let Some(value) = arg.strip_prefix("--rules=") {
+            if value.is_empty() {
+                return Err("--rules context cannot be empty".into());
+            }
+            return Ok(Some(value.to_string()));
+        }
+        if arg == "--rules" {
+            return Ok(args
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+                .cloned());
+        }
+    }
+    Ok(None)
+}
+
+fn is_path_context(value: &str) -> bool {
+    let path = Path::new(value);
+    path.is_absolute() || value.starts_with('.') || value.contains('/') || !value.contains(':')
+}
+
+/// How the `--rules` context was read, in the user's own words back at them.
+///
+/// The heuristic is unavoidably a guess, and it guesses "path" for anything
+/// without a colon: `redact --rules myword` becomes a relative-path lookup that
+/// matches no overlay at all. Reporting the reading is what turns that from a
+/// silent empty result into an obvious typo.
+fn context_interpretation(value: &str) -> String {
+    if is_path_context(value) {
+        format!("reading `{value}` as a working-directory path; a pane id contains a `:`")
+    } else {
+        format!("reading `{value}` as a pane id")
+    }
+}
+
+fn path_context(value: &str) -> PaneRef {
+    PaneRef {
+        pane_id: String::new(),
+        workspace_id: String::new(),
+        tab_id: String::new(),
+        workspace_label: String::new(),
+        agent: None,
+        title: None,
+        cwd: Some(PathBuf::from(value)),
+    }
 }
 
 fn explain(args: &[String]) -> Result<()> {
@@ -327,7 +412,7 @@ fn status() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::verb_of;
+    use super::{context_interpretation, is_path_context, optional_rules_context, verb_of};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -340,8 +425,11 @@ mod tests {
         assert_eq!(verb_of(&args(&["--json", "--interval", "5"])), "--json");
         assert_eq!(verb_of(&args(&["--interval", "5", "--json"])), "--json");
         assert_eq!(verb_of(&args(&["--interval=5", "--json"])), "--json");
+        assert_eq!(verb_of(&args(&["--lines", "800", "--sarif"])), "--sarif");
         assert_eq!(verb_of(&args(&["--lines", "800", "--watch"])), "--watch");
         assert_eq!(verb_of(&args(&["--all-panes", "--watch"])), "--watch");
+        assert_eq!(verb_of(&args(&["--rules=/work/company"])), "--rules");
+        assert_eq!(verb_of(&args(&["--rules", "/work/company"])), "--rules");
         assert_eq!(verb_of(&args(&["--quiet", "10m"])), "--quiet");
         assert_eq!(verb_of(&args(&["--loud"])), "--loud");
     }
@@ -384,6 +472,49 @@ mod tests {
         assert_eq!(
             verb_of(&args(&["--explain=jwt", "--lines", "800"])),
             "--explain"
+        );
+    }
+
+    #[test]
+    fn rules_context_is_optional_and_supports_both_spellings() {
+        assert_eq!(
+            optional_rules_context(&args(&["--rules"]))
+                .expect("context")
+                .as_deref(),
+            None
+        );
+        assert_eq!(
+            optional_rules_context(&args(&["--rules", "w1:p2"]))
+                .expect("context")
+                .as_deref(),
+            Some("w1:p2")
+        );
+        assert_eq!(
+            optional_rules_context(&args(&["--rules=/work/company"]))
+                .expect("context")
+                .as_deref(),
+            Some("/work/company")
+        );
+        assert!(is_path_context("/work/company"));
+        assert!(is_path_context("relative/repo"));
+        assert!(!is_path_context("w1:p2"));
+    }
+
+    #[test]
+    fn the_reading_of_a_rules_context_is_reported() {
+        // `myword` is not a pane id to this heuristic, and a user who meant one
+        // has no other way to find that out: the listing looks identical.
+        assert_eq!(
+            context_interpretation("myword"),
+            "reading `myword` as a working-directory path; a pane id contains a `:`"
+        );
+        assert_eq!(
+            context_interpretation("/work/company"),
+            "reading `/work/company` as a working-directory path; a pane id contains a `:`"
+        );
+        assert_eq!(
+            context_interpretation("w1:p2"),
+            "reading `w1:p2` as a pane id"
         );
     }
 }
