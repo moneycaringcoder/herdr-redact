@@ -20,6 +20,8 @@ pub const MAX_INTERVAL_SECONDS: u64 = 3_600;
 /// panes every few seconds is free.
 pub const DEFAULT_LINES: u32 = 400;
 pub const MAX_LINES: u32 = 20_000;
+/// Lines of scrollback read the first time the watcher reaches each pane.
+pub const DEFAULT_BACKFILL_LINES: u32 = 5_000;
 
 /// Cap on stored findings, so a pathological pane cannot grow the state file
 /// without bound. Oldest acknowledged findings are dropped first.
@@ -57,6 +59,9 @@ pub struct Config {
     pub interval: Duration,
     /// Lines of terminal output read per pane per cycle.
     pub lines: u32,
+    /// Lines of terminal scrollback read the first time the watcher reaches a
+    /// pane. Zero disables the startup backfill.
+    pub backfill_lines: u32,
     /// Scan every pane, not just the ones herdr reports an agent for. Off by
     /// default: agent panes are the stated exposure surface, and the README
     /// says how to widen it.
@@ -87,6 +92,7 @@ impl Default for Config {
         Self {
             interval: Duration::from_secs(DEFAULT_INTERVAL_SECONDS),
             lines: DEFAULT_LINES,
+            backfill_lines: DEFAULT_BACKFILL_LINES,
             scan_all_panes: false,
             env_assignments: true,
             entropy: false,
@@ -171,6 +177,11 @@ pub fn load_with_args(args: &[String]) -> Result<Config> {
             .clamp(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS),
     );
     config.lines = config.lines.clamp(1, MAX_LINES);
+    // Unlike the ordinary per-cycle window, zero deliberately disables the
+    // startup backfill.
+    if config.backfill_lines > 0 {
+        config.backfill_lines = config.backfill_lines.clamp(1, MAX_LINES);
+    }
     Ok(config)
 }
 
@@ -182,6 +193,7 @@ pub fn load_with_args(args: &[String]) -> Result<Config> {
 struct FileConfig {
     interval_seconds: Option<u64>,
     lines: Option<u32>,
+    backfill_lines: Option<u32>,
     scan_all_panes: Option<bool>,
     env_assignments: Option<bool>,
     entropy: Option<bool>,
@@ -224,6 +236,9 @@ fn load_file() -> Config {
     }
     if let Some(lines) = file.lines {
         config.lines = lines;
+    }
+    if let Some(lines) = file.backfill_lines {
+        config.backfill_lines = lines;
     }
     if let Some(all) = file.scan_all_panes {
         config.scan_all_panes = all;

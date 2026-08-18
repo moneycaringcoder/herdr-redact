@@ -69,6 +69,12 @@ pub struct Store {
     /// per-run object threaded through every cycle, and `scan_cycle`'s signature
     /// has nowhere else to keep state that must outlive a single cycle.
     seen_text: HashMap<String, u64>,
+    /// Pane ids whose one-time startup scrollback read has been requested.
+    ///
+    /// Deliberately not persisted: backfilling once more in a fresh process is
+    /// harmless, while persisting this would keep a restarted watcher from
+    /// re-reading history that may now be available.
+    backfilled_panes: HashSet<String>,
     /// Findings first seen since the last drain, awaiting a notification
     /// decision. [`Store::observe`] returns the same list, but `scan_cycle`
     /// returns a [`Report`] and has no channel to hand them back through, so
@@ -121,6 +127,7 @@ impl Store {
             notes,
             notified: HashSet::new(),
             seen_text: HashMap::new(),
+            backfilled_panes: HashSet::new(),
             pending: Vec::new(),
             stamp: Cell::new(stamp),
             scan_cursor: 0,
@@ -188,6 +195,8 @@ impl Store {
             .retain(|pane_id, _| live_pane_ids.iter().any(|id| id == pane_id));
         self.notified
             .retain(|(_, pane_id)| live_pane_ids.iter().any(|id| id == pane_id));
+        self.backfilled_panes
+            .retain(|pane_id| live_pane_ids.iter().any(|id| id == pane_id));
         before - self.findings.len()
     }
 
@@ -269,6 +278,19 @@ impl Store {
         }
         self.seen_text.insert(pane_id.to_string(), hash);
         true
+    }
+
+    /// Whether this pane is still owed the deep scrollback read for this
+    /// watcher run. Read-only: the pane is only marked once a read has actually
+    /// come back, by [`Store::mark_backfilled`].
+    pub fn needs_backfill(&self, pane_id: &str) -> bool {
+        !self.backfilled_panes.contains(pane_id)
+    }
+
+    /// Records that this pane's deep read has happened, so later cycles use the
+    /// ordinary window.
+    pub fn mark_backfilled(&mut self, pane_id: &str) {
+        self.backfilled_panes.insert(pane_id.to_string());
     }
 
     /// Re-reads the findings file if another process has rewritten it, keeping
