@@ -38,6 +38,14 @@ at least one minor cycle.
   backfill that could not reach the whole history says so in a note of its own,
   distinct from the one about the ordinary window. `--once` and `--json` do not
   backfill: they are interactive verbs, and this is the watcher's blind spot.
+- `redact --calibrate`, which runs the active rule set over your own pane output
+  and reports what it *would* have fired on, badging nothing and acknowledging
+  nothing. Precision is what this plugin sells, and precision is measurable;
+  measuring it against your own terminal before trusting it is a better argument
+  than anything in this README. It writes nothing at all — not a finding, not the
+  digest key, not even the state directory, because it never constructs the store
+  in the first place. `--all-panes` is worth pairing with it: the noisiest surface
+  is the one worth measuring.
 - `redact --explain <rule>`, which prints why a detection rule is shaped the way
   it is: what it matches structurally, at what confidence, and what near-misses
   it deliberately refuses. That reasoning was only in the README, and it is most

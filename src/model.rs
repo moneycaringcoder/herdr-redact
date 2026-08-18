@@ -136,6 +136,39 @@ pub struct Match {
 }
 
 // ---------------------------------------------------------------------------
+// Calibration
+// ---------------------------------------------------------------------------
+
+/// One rule hit observed during a read-only calibration.
+///
+/// The scanner's [`Match`] is the only credential-shaped payload here. It has
+/// already discarded the value in favour of a masked preview, length and keyed
+/// digest before crossing the module boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalibrationHit {
+    pub pane_id: String,
+    pub pane_label: String,
+    pub workspace_id: String,
+    pub matched: Match,
+}
+
+/// What the current rule set would have reported against one pane snapshot.
+///
+/// Unlike [`Report`], this has no finding lifecycle: calibration neither reads
+/// nor writes the findings store, and every hit belongs only to this run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Calibration {
+    pub hits: Vec<CalibrationHit>,
+    pub panes_scanned: usize,
+    pub panes_skipped: usize,
+    pub panes_unread: usize,
+    pub panes_truncated: usize,
+    pub notes: Vec<String>,
+    /// Unix seconds.
+    pub generated_at: u64,
+}
+
+// ---------------------------------------------------------------------------
 // Findings
 // ---------------------------------------------------------------------------
 
