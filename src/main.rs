@@ -11,6 +11,7 @@ Usage: redact [VERB]
 
 Scanning:
   --once              Scan every agent pane once, print the findings, exit
+  --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
   --watch             Live findings pane (a acknowledges, A acknowledges all)
   --rules             List the active detection rules and exit
@@ -94,6 +95,7 @@ fn run(args: &[String]) -> Result<()> {
     let verb = verb_of(args);
     match verb {
         "--once" => render::run_once(&config::load_with_args(args)?),
+        "--calibrate" => render::run_calibrate(&config::load_with_args(args)?),
         "--json" => render::run_json(&config::load_with_args(args)?),
         "--watch" => render::run_watch(&config::load_with_args(args)?),
         "--rules" => rules(&config::load_with_args(args)?),
@@ -249,6 +251,7 @@ mod tests {
     #[test]
     fn the_verb_is_found_whatever_the_order() {
         assert_eq!(verb_of(&args(&["--once"])), "--once");
+        assert_eq!(verb_of(&args(&["--calibrate"])), "--calibrate");
         assert_eq!(verb_of(&args(&["--json", "--interval", "5"])), "--json");
         assert_eq!(verb_of(&args(&["--interval", "5", "--json"])), "--json");
         assert_eq!(verb_of(&args(&["--interval=5", "--json"])), "--json");

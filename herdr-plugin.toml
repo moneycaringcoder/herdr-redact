@@ -54,6 +54,13 @@ contexts = ["global", "workspace"]
 command = ["./target/release/redact", "--once"]
 
 [[actions]]
+id = "calibrate"
+title = "Redact: calibrate"
+description = "Show what active rules would fire on without storing findings or badging."
+contexts = ["global", "workspace"]
+command = ["./target/release/redact", "--calibrate"]
+
+[[actions]]
 id = "json"
 title = "Redact: JSON snapshot"
 description = "Machine-readable findings for scripting. Contains no secret values."
