@@ -12,7 +12,7 @@
 //! list, because the shape being tested is a large session and the captured one
 //! has four panes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -45,7 +45,7 @@ fn env_lock() -> MutexGuard<'static, ()> {
 struct TestServer {
     path: PathBuf,
     dir: PathBuf,
-    reads: Arc<Mutex<Vec<String>>>,
+    reads: Arc<Mutex<Vec<(String, u32)>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -58,6 +58,29 @@ impl TestServer {
     /// `fail` names panes the server answers with an error envelope, the way it
     /// answers for a pane that closed under us.
     fn start_failing(delay: Duration, fail: Vec<String>) -> Self {
+        Self::start_with(delay, fail, false, Vec::new())
+    }
+
+    /// [`TestServer::start_failing`], except each named pane fails only its
+    /// first read and answers normally afterwards — a transport hiccup rather
+    /// than a pane that is gone for good.
+    fn start_failing_once(delay: Duration, fail: Vec<String>) -> Self {
+        Self::start_with(delay, fail, true, Vec::new())
+    }
+
+    fn start_truncated(delay: Duration, truncated: Vec<String>) -> Self {
+        Self::start_with(delay, Vec::new(), false, truncated)
+    }
+
+    /// `fail` names panes the server answers with an error envelope, `fail_once`
+    /// limits that to their first read, and `truncated` names successful reads
+    /// whose response carries that flag.
+    fn start_with(
+        delay: Duration,
+        fail: Vec<String>,
+        fail_once: bool,
+        truncated: Vec<String>,
+    ) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "redact-cycle-{}-{}",
@@ -77,6 +100,7 @@ impl TestServer {
             let reads = Arc::clone(&reads);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
+                let mut failed_once: HashSet<String> = HashSet::new();
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((stream, _)) => {
@@ -93,13 +117,16 @@ impl TestServer {
                                     .as_str()
                                     .unwrap_or_default()
                                     .to_string();
-                                reads.lock().expect("reads").push(pane_id);
+                                let lines = request["params"]["lines"].as_u64().unwrap_or_default();
+                                reads.lock().expect("reads").push((pane_id, lines as u32));
                                 std::thread::sleep(delay);
                             }
-                            let body = if method == "pane.read"
-                                && fail.iter().any(|id| {
-                                    request["params"]["pane_id"].as_str() == Some(id.as_str())
-                                }) {
+                            let refuse = method == "pane.read" && {
+                                let id = request["params"]["pane_id"].as_str().unwrap_or_default();
+                                fail.iter().any(|f| f.as_str() == id)
+                                    && (!fail_once || failed_once.insert(id.to_string()))
+                            };
+                            let body = if refuse {
                                 json!({
                                     "id": "redact:1",
                                     "error": {
@@ -109,7 +136,10 @@ impl TestServer {
                                 })
                                 .to_string()
                             } else {
-                                reply_to(&request)
+                                let is_truncated = truncated.iter().any(|id| {
+                                    request["params"]["pane_id"].as_str() == Some(id.as_str())
+                                });
+                                reply_to(&request, is_truncated)
                             };
                             let mut stream = &stream;
                             let _ = stream.write_all(body.as_bytes());
@@ -135,11 +165,11 @@ impl TestServer {
         }
     }
 
-    fn reads(&self) -> Vec<String> {
+    fn reads(&self) -> Vec<(String, u32)> {
         self.reads.lock().expect("reads").clone()
     }
 
-    fn take_reads(&self) -> Vec<String> {
+    fn take_reads(&self) -> Vec<(String, u32)> {
         std::mem::take(&mut *self.reads.lock().expect("reads"))
     }
 }
@@ -195,7 +225,7 @@ fn pane_body(pane_id: &str) -> String {
     format!("$ cat .env\nGITHUB_TOKEN=ghp_EXAMPLEEXAMPLEEXAMPLE{tag:E<18}\n$ echo done\ndone\n")
 }
 
-fn reply_to(request: &Value) -> String {
+fn reply_to(request: &Value, truncated: bool) -> String {
     let method = request["method"].as_str().unwrap_or_default();
     let result = match method {
         "session.snapshot" => json!({"type": "session_snapshot", "snapshot": snapshot()}),
@@ -205,6 +235,7 @@ fn reply_to(request: &Value) -> String {
                 serde_json::from_str(include_str!("fixtures/pane_read.json")).expect("fixture");
             read["read"]["pane_id"] = json!(pane_id);
             read["read"]["text"] = json!(pane_body(pane_id));
+            read["read"]["truncated"] = json!(truncated);
             read
         }
         _ => json!({"type": "ok"}),
@@ -253,6 +284,113 @@ fn a_cycle_with_room_to_spare_reads_every_pane() {
     let _ = std::fs::remove_dir_all(&state);
 }
 
+#[test]
+fn each_pane_uses_backfill_then_the_ordinary_window() {
+    let _guard = env_lock();
+    let server = TestServer::start(Duration::from_millis(0));
+    let state = sandbox("backfill-then-window");
+    let config = Config::default();
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+        .expect("first cycle");
+    assert!(
+        server
+            .take_reads()
+            .iter()
+            .all(|(_, lines)| *lines == config.backfill_lines),
+        "the first read of every pane must use backfill_lines"
+    );
+
+    daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+        .expect("second cycle");
+    assert!(
+        server
+            .take_reads()
+            .iter()
+            .all(|(_, lines)| *lines == config.lines),
+        "later reads must use lines"
+    );
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn zero_backfill_uses_the_ordinary_window_for_every_read() {
+    let _guard = env_lock();
+    let server = TestServer::start(Duration::from_millis(0));
+    let state = sandbox("backfill-disabled");
+    let config = Config {
+        backfill_lines: 0,
+        ..Config::default()
+    };
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    for _ in 0..2 {
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("cycle");
+    }
+    let reads = server.take_reads();
+    assert_eq!(reads.len(), PANES * 2);
+    for (pane_id, lines) in &reads {
+        assert_eq!(
+            *lines, config.lines,
+            "backfill_lines: 0 must preserve the old pane.read value for {pane_id}: {reads:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn backfill_and_ordinary_truncation_have_distinct_notes() {
+    let _guard = env_lock();
+    let pane_id = "w1:p0";
+    let server = TestServer::start_truncated(Duration::from_millis(0), vec![pane_id.to_string()]);
+    let state = sandbox("backfill-truncated");
+    let config = Config::default();
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    let (backfill, _) =
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("backfill cycle");
+    assert!(
+        backfill
+            .notes
+            .iter()
+            .any(|note| note.contains(pane_id) && note.contains("startup backfill")),
+        "no backfill-specific truncation note: {:?}",
+        backfill.notes
+    );
+    assert_eq!(
+        backfill.panes_truncated, 0,
+        "a backfill truncation must not trigger the ordinary-window summary"
+    );
+
+    let (ordinary, _) =
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("ordinary cycle");
+    assert!(
+        ordinary
+            .notes
+            .iter()
+            .any(|note| note.contains(pane_id) && note.contains("had more output")),
+        "no ordinary truncation note: {:?}",
+        ordinary.notes
+    );
+    assert_eq!(ordinary.panes_truncated, 1);
+    let rendered = redact::render::report_text(&ordinary, 80);
+    assert!(
+        rendered.contains("raise `lines`"),
+        "ordinary truncation summary disappeared:\n{rendered}"
+    );
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
 /// The heart of it: a session too large for one budget is still fully covered,
 /// because each cycle resumes where the last one stopped.
 #[test]
@@ -284,7 +422,16 @@ fn a_session_too_large_for_one_budget_is_covered_across_cycles() {
             report.panes_scanned <= PANES,
             "more reads than there are panes"
         );
-        seen.extend(read);
+        for (pane_id, lines) in read {
+            if seen.insert(pane_id) {
+                assert_eq!(
+                    lines,
+                    config.backfill_lines,
+                    "a pane first reached on cycle {} did not get its deep read",
+                    cycles + 1
+                );
+            }
+        }
         cycles += 1;
     }
 
@@ -374,6 +521,59 @@ fn a_failing_pane_read_does_not_abandon_the_cycle() {
             "no note names the pane that could not be read: {:?}",
             report.notes
         );
+    }
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+/// A read that failed never looked at anything, so it cannot have spent the
+/// pane's one deep read. Before this was true a single transport hiccup left
+/// that pane on the ordinary window for the life of the process: its scrollback
+/// was never scanned, and the report said nothing at all about the hole.
+#[test]
+fn a_pane_whose_first_read_fails_is_still_owed_its_deep_read() {
+    let _guard = env_lock();
+    let broken = "w1:p3";
+    let server = TestServer::start_failing_once(Duration::from_millis(0), vec![broken.to_string()]);
+    let state = sandbox("backfill-after-failure");
+    let config = Config::default();
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+        .expect("first cycle");
+    let first: Vec<u32> = server
+        .take_reads()
+        .iter()
+        .filter(|(pane_id, _)| pane_id == broken)
+        .map(|(_, lines)| *lines)
+        .collect();
+    assert_eq!(
+        first,
+        vec![config.backfill_lines],
+        "the failing pane was not offered its deep read on the first cycle"
+    );
+
+    daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+        .expect("second cycle");
+    let reads = server.take_reads();
+    let retry: Vec<u32> = reads
+        .iter()
+        .filter(|(pane_id, _)| pane_id == broken)
+        .map(|(_, lines)| *lines)
+        .collect();
+    assert_eq!(
+        retry,
+        vec![config.backfill_lines],
+        "a failed read must leave the pane still owed its deep read: {reads:?}"
+    );
+    for (pane_id, lines) in &reads {
+        if pane_id != broken {
+            assert_eq!(
+                *lines, config.lines,
+                "a pane already read successfully must not backfill twice: {reads:?}"
+            );
+        }
     }
 
     let _ = std::fs::remove_dir_all(&state);
