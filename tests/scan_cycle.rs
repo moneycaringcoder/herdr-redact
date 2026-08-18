@@ -46,6 +46,7 @@ struct TestServer {
     path: PathBuf,
     dir: PathBuf,
     reads: Arc<Mutex<Vec<(String, u32)>>>,
+    methods: Arc<Mutex<Vec<(String, String)>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -94,10 +95,12 @@ impl TestServer {
         let listener = UnixListener::bind(&path).expect("bind");
         listener.set_nonblocking(true).expect("nonblocking");
         let reads = Arc::new(Mutex::new(Vec::new()));
+        let methods = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
 
         let thread = {
             let reads = Arc::clone(&reads);
+            let methods = Arc::clone(&methods);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 let mut failed_once: HashSet<String> = HashSet::new();
@@ -112,6 +115,16 @@ impl TestServer {
                             let request: Value =
                                 serde_json::from_str(line.trim_end()).expect("JSON");
                             let method = request["method"].as_str().unwrap_or_default();
+                            if method.starts_with("pane.") {
+                                let pane_id = request["params"]["pane_id"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string();
+                                methods
+                                    .lock()
+                                    .expect("methods")
+                                    .push((pane_id, method.to_string()));
+                            }
                             if method == "pane.read" {
                                 let pane_id = request["params"]["pane_id"]
                                     .as_str()
@@ -160,6 +173,7 @@ impl TestServer {
             path,
             dir,
             reads,
+            methods,
             stop,
             thread: Some(thread),
         }
@@ -171,6 +185,10 @@ impl TestServer {
 
     fn take_reads(&self) -> Vec<(String, u32)> {
         std::mem::take(&mut *self.reads.lock().expect("reads"))
+    }
+
+    fn take_methods(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.methods.lock().expect("methods"))
     }
 }
 
@@ -238,6 +256,16 @@ fn reply_to(request: &Value, truncated: bool) -> String {
             read["read"]["truncated"] = json!(truncated);
             read
         }
+        "pane.process_info" => {
+            let pane_id = request["params"]["pane_id"].as_str().unwrap_or_default();
+            json!({
+                "type": "pane_process_info",
+                "process_info": {
+                    "pane_id": pane_id,
+                    "foreground_processes": [{"pid": 4310, "name": "cargo"}]
+                }
+            })
+        }
         _ => json!({"type": "ok"}),
     };
     json!({"id": "redact:1", "result": result}).to_string()
@@ -280,6 +308,50 @@ fn a_cycle_with_room_to_spare_reads_every_pane() {
     assert_eq!(report.panes_scanned, PANES);
     assert_eq!(report.panes_unread, 0);
     assert_eq!(report.findings.len(), PANES, "one finding per pane");
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn process_info_is_requested_only_for_panes_with_new_findings() {
+    let _guard = env_lock();
+    let server = TestServer::start(Duration::from_millis(0));
+    let state = sandbox("process-info");
+    let config = Config::default();
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    let (first, _) =
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("first cycle");
+    assert_eq!(first.findings.len(), PANES);
+    let methods = server.take_methods();
+    let reads: BTreeSet<&str> = methods
+        .iter()
+        .filter(|(_, method)| method == "pane.read")
+        .map(|(pane_id, _)| pane_id.as_str())
+        .collect();
+    let process_info: BTreeSet<&str> = methods
+        .iter()
+        .filter(|(_, method)| method == "pane.process_info")
+        .map(|(pane_id, _)| pane_id.as_str())
+        .collect();
+    assert_eq!(
+        process_info, reads,
+        "only panes that produced new findings should get process context"
+    );
+
+    let (second, _) =
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("unchanged cycle");
+    assert_eq!(second.findings.len(), PANES);
+    let methods = server.take_methods();
+    assert!(
+        methods
+            .iter()
+            .all(|(_, method)| method != "pane.process_info"),
+        "a cycle with no new findings requested process context: {methods:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&state);
 }

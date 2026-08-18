@@ -28,6 +28,16 @@ at least one minor cycle.
   scheduled and manual only, it is not a required check, and a red canary is a
   signal to read herdr's recent changes rather than a reason to hold a pull
   request.
+- A finding now records where it came from, not just which pane it appeared in:
+  the agent, the pane's working directory, and the name and pid of the
+  foreground process at the moment the finding was first seen. It shows in the
+  narrow-pane view and in `--json`. The command line and the terminal title are
+  deliberately **not** recorded, in either place: `curl -H "Authorization:
+  Bearer …"` is a command line, a shell sets its title to the command it is
+  running, and storing either would write the credential into the state file
+  that this plugin promises never contains one. The process is described as what
+  was running when the finding was first seen, never as what produced it,
+  because that is the part herdr can actually tell us.
 - The watcher now reads each pane's available scrollback once, the first time it
   reaches that pane, and the ordinary window on every cycle after that. Until
   now a credential that scrolled past before you enabled the watcher was never

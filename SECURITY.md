@@ -31,7 +31,9 @@ Everything below follows from that.
 | thing | where it lives | contains a secret? |
 |---|---|---|
 | pane text | process memory, for the duration of one scan | yes, transiently |
+| a `pane.process_info` response | process memory, for the duration of one lookup | potentially, transiently — only process name and pid are retained |
 | a `Match` | process memory | no — masked preview, length, keyed digest |
+| a `Finding` | process memory, `findings.json`, and report output | no credential value — masked match data plus agent, working directory, and foreground process name and pid when first seen |
 | `findings.json` | `~/.local/state/herdr/plugins/moneycaringcoder.redact/` | no |
 | `digest.key` | the same directory, mode `0600` | no |
 | badge tokens | herdr's in-memory session state | no — a count |
@@ -43,6 +45,12 @@ value, and never more than about a third of it. `tests/never_leaks.rs` asserts
 this as a property over every positive detection vector: the full value must not
 appear in any output the plugin produces, including `Debug` renderings and the
 persisted state file.
+
+The command line and terminal title are deliberately not recorded in a finding.
+Both are likely places for the credential itself to appear: for example,
+`curl -H "Authorization: Bearer …"` or a shell title derived from that command.
+The client reduces process context to the foreground process name and pid before
+it can enter the finding store.
 
 `digest.key` is per-installation keying material for the identity digest stored
 in `findings.json`. It exists so that the persisted record of "this same finding
