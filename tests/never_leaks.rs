@@ -195,7 +195,25 @@ fn the_persisted_state_file_contains_no_value() {
     );
     let fresh = store.observe(&pane(), &matches, now());
     store.record_foreground_process_when_first_seen(&fresh, Some("curl"), Some(4310));
+    let ids: Vec<String> = fresh.iter().map(|finding| finding.id.clone()).collect();
+    for id in &ids {
+        assert_eq!(store.suppress(id), 1);
+    }
+    assert_eq!(
+        store.suppression_count(),
+        ids.len(),
+        "every detected vector must exercise the persisted suppression shape"
+    );
+    assert!(
+        store.observe(&pane(), &matches, now()).is_empty(),
+        "the suppressed vectors must pass through observe's suppression path"
+    );
     store.save().expect("save");
+    let state = std::fs::read_to_string(dir.join("findings.json")).expect("findings state");
+    assert!(
+        state.contains("\"suppressions\""),
+        "the leak check must include the suppression section"
+    );
 
     // Every file the store wrote, not just the one we expect it to have.
     let mut checked = 0usize;
