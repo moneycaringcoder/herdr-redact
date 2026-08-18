@@ -23,7 +23,8 @@ use redact::model::{
     Alert, Calibration, CalibrationHit, Confidence, Finding, Match, PaneRef, Report,
 };
 use redact::render::{
-    abbreviate, badge, calibration_text, report_json, report_text, BADGE_COLUMNS, MIN_COLUMNS,
+    abbreviate, badge, calibration_text, report_json, report_json_with_quiet, report_text,
+    report_text_with_quiet, BADGE_COLUMNS, MIN_COLUMNS,
 };
 
 // ---------------------------------------------------------------------------
@@ -666,6 +667,44 @@ fn the_alert_level_follows_the_worst_unacknowledged_finding() {
     report.findings[1].acknowledged = true;
     let value: serde_json::Value = serde_json::from_str(&report_json(&report)).unwrap();
     assert_eq!(value["alert"], "clear");
+}
+
+#[test]
+fn quiet_banner_names_its_expiry_and_says_collection_continues() {
+    let text = report_text_with_quiet(&populated(), 80, Some(2_000), 1_000);
+    let flat = flatten(&text);
+
+    assert!(flat.contains("QUIET until Unix time 2000"), "{text}");
+    assert!(
+        flat.contains("findings are still being collected"),
+        "{text}"
+    );
+}
+
+#[test]
+fn json_carries_quiet_state_and_expiry() {
+    let value: serde_json::Value =
+        serde_json::from_str(&report_json_with_quiet(&populated(), Some(2_000), 1_000)).unwrap();
+
+    assert_eq!(value["quiet"]["active"], true);
+    assert_eq!(value["quiet"]["until"], 2_000);
+    assert_eq!(value["quiet"]["remaining_seconds"], 1_000);
+    assert_eq!(value["quiet"]["findings_still_collected"], true);
+}
+
+#[test]
+fn a_clean_quiet_report_does_not_read_as_a_failed_scan() {
+    let report = empty_but_fine();
+    let text = flatten(&report_text_with_quiet(&report, 80, Some(2_000), 1_000));
+    let value: serde_json::Value =
+        serde_json::from_str(&report_json_with_quiet(&report, Some(2_000), 1_000)).unwrap();
+
+    assert!(text.contains("6 panes scanned, nothing found"), "{text}");
+    assert!(!text.contains("did not complete cleanly"), "{text}");
+    assert!(!text.contains("failed"), "{text}");
+    assert_eq!(value["alert"], "clear");
+    assert_eq!(value["counts"]["notes"], 0);
+    assert_eq!(value["quiet"]["active"], true);
 }
 
 // ---------------------------------------------------------------------------

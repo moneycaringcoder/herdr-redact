@@ -113,3 +113,17 @@ id = "watch-disable"
 title = "Redact: disable pane watcher"
 contexts = ["global"]
 command = ["./target/release/redact", "--disable"]
+
+[[actions]]
+id = "quiet"
+title = "Redact: quiet for 10 minutes"
+description = "Hide badges and toasts for 10 minutes while scanning continues."
+contexts = ["global"]
+command = ["./target/release/redact", "--quiet", "10m"]
+
+[[actions]]
+id = "loud"
+title = "Redact: resume warnings"
+description = "End quiet mode early and resume badges and toasts."
+contexts = ["global"]
+command = ["./target/release/redact", "--loud"]
