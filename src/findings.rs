@@ -33,8 +33,9 @@ use crate::config::{self, Config};
 use crate::model::{Confidence, DigestKey, Finding, Match, PaneRef, Report};
 use crate::Result;
 
-/// Bumped only when the on-disk shape changes incompatibly. Unknown fields are
-/// ignored on read, so additive changes do not need it.
+/// Bumped only when the on-disk shape changes incompatibly. Suppressions are an
+/// additive, defaulted field and unknown fields are already ignored on read, so
+/// adding them does not require a version bump.
 const FILE_VERSION: u32 = 1;
 
 /// Key for the change stamp, which is not a security boundary: it only answers
@@ -46,11 +47,37 @@ const STAMP_KEY: DigestKey = [0u8; 16];
 /// file is the only thing standing between a stored digest and a dictionary
 /// attack on a low-entropy secret.
 const PRIVATE: u32 = 0o600;
+/// A human-readable report note doubles as the suppression count's transport to
+/// [`Report`], whose stable public shape predates suppressions.
+pub(crate) const SUPPRESSIONS_NOTE_SUFFIX: &str = " permanent value suppression(s) active.";
+
+/// One exact value the user has permanently suppressed for one detection rule.
+///
+/// There is deliberately no preview or other string field that could carry the
+/// value. FNV-1a is not a cryptographic MAC; pairing its keyed digest with the
+/// rule name makes a collision as specific as it can cheaply be now that a
+/// collision could silence a real credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suppression {
+    rule: String,
+    digest: u64,
+}
+
+impl Suppression {
+    pub fn rule(&self) -> &str {
+        &self.rule
+    }
+
+    pub fn short_digest(&self) -> String {
+        format!("{:06x}", self.digest >> 40)
+    }
+}
 
 #[derive(Debug)]
 pub struct Store {
     key: DigestKey,
     findings: Vec<Finding>,
+    suppressions: Vec<Suppression>,
     path: PathBuf,
     max_findings: usize,
     /// Problems raised while loading, or by the cap. Folded into every report,
@@ -80,9 +107,11 @@ pub struct Store {
     /// returns a [`Report`] and has no channel to hand them back through, so
     /// they are queued here and drained by [`Store::take_new_findings`].
     pending: Vec<Finding>,
+
     /// Digest of the findings file as we last read or wrote it, so an
-    /// acknowledgement made by another process (`redact --ack` from a shell)
-    /// can be noticed rather than clobbered by the daemon's next save.
+    /// acknowledgement or suppression made by another process (`redact --ack`
+    /// or `redact --suppress` from a shell) can be noticed rather than clobbered
+    /// by the daemon's next save.
     ///
     /// A content digest rather than an mtime: filesystem timestamp granularity
     /// is a whole second on some filesystems, which is shorter than a scan
@@ -110,18 +139,19 @@ impl Store {
         let dir = config::state_dir();
         if let Err(err) = fs::create_dir_all(&dir) {
             notes.push(format!(
-                "could not create the state directory {} ({err}) — findings and acknowledgements \
-                 will not be remembered",
+                "could not create the state directory {} ({err}) — findings, acknowledgements and \
+                 suppressions will not be remembered",
                 dir.display()
             ));
         }
         let key = load_or_create_key(&config::key_file(), &mut notes);
         let path = config::findings_file();
-        let (findings, stamp) = read_state(&path, &mut notes);
+        let (findings, suppressions, stamp) = read_state(&path, &mut notes);
 
         let mut store = Self {
             key,
             findings,
+            suppressions,
             path,
             max_findings: config.max_findings.max(1),
             notes,
@@ -132,6 +162,7 @@ impl Store {
             stamp: Cell::new(stamp),
             scan_cursor: 0,
         };
+        store.apply_suppressions_to_findings();
         // A file written by a build with a larger cap must not stay over it.
         store.enforce_cap();
         store
@@ -151,6 +182,17 @@ impl Store {
     pub fn observe(&mut self, pane: &PaneRef, matches: &[Match], now: u64) -> Vec<Finding> {
         let mut fresh = Vec::new();
         for candidate in matches {
+            // Suppression is global across panes on purpose: the digest is
+            // pane-independent, and the same exact false positive printed in a
+            // second pane should stay quiet. The rule remains part of the key so
+            // the same value can still be caught by a different detector.
+            if self
+                .suppressions
+                .iter()
+                .any(|entry| entry.rule == candidate.pattern && entry.digest == candidate.digest)
+            {
+                continue;
+            }
             let id = Finding::fingerprint(&candidate.pattern, &pane.pane_id, candidate.digest);
             // The same secret twice in one pane is one finding: the fingerprint
             // does not carry the line number, so the second sighting lands here.
@@ -229,26 +271,40 @@ impl Store {
     /// An ambiguous prefix acknowledges nothing: silently picking one of two
     /// findings would leave the user believing they had dismissed the other.
     pub fn acknowledge(&mut self, id: &str) -> usize {
-        let needle = id.trim().to_ascii_lowercase();
-        if needle.is_empty() {
+        let Some(index) = self.finding_index(id) else {
             return 0;
-        }
-        let index = match self.findings.iter().position(|f| f.id == needle) {
-            Some(index) => index,
-            None => {
-                let mut hits = self
-                    .findings
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| f.id.starts_with(&needle));
-                match (hits.next(), hits.next()) {
-                    (Some((index, _)), None) => index,
-                    _ => return 0,
-                }
-            }
         };
         self.findings[index].acknowledged = true;
         1
+    }
+
+    /// Acknowledges a finding and permanently suppresses this exact value for
+    /// this rule. The pane is deliberately absent from the suppression key.
+    pub fn suppress(&mut self, id: &str) -> usize {
+        let Some(index) = self.finding_index(id) else {
+            return 0;
+        };
+        self.findings[index].acknowledged = true;
+        let finding = &self.findings[index];
+        if !self
+            .suppressions
+            .iter()
+            .any(|entry| entry.rule == finding.pattern && entry.digest == finding.digest)
+        {
+            self.suppressions.push(Suppression {
+                rule: finding.pattern.clone(),
+                digest: finding.digest,
+            });
+        }
+        1
+    }
+
+    pub fn suppression_count(&self) -> usize {
+        self.suppressions.len()
+    }
+
+    pub fn suppressions(&self) -> &[Suppression] {
+        &self.suppressions
     }
 
     /// Acknowledges everything outstanding. Returns how many findings changed,
@@ -264,14 +320,15 @@ impl Store {
         count
     }
 
-    /// Forgets everything, acknowledged or not. The state file is rewritten
-    /// empty rather than deleted, so the digest key survives.
+    /// Forgets every finding and permanent suppression. The state file is
+    /// rewritten empty rather than deleted, so the digest key survives.
     ///
     /// The notification limiter is *not* reset: this is still the same daemon
     /// run, and a user who cleared the list did not ask to be toasted again.
     pub fn forget_all(&mut self) -> usize {
         let count = self.findings.len();
         self.findings.clear();
+        self.suppressions.clear();
         self.pending.clear();
         count
     }
@@ -337,7 +394,8 @@ impl Store {
 
     /// Re-reads the state file if another process has rewritten it since we last
     /// touched it, so this run's next save cannot silently undo an
-    /// acknowledgement made from a shell. Returns whether anything was reloaded.
+    /// acknowledgement or suppression made from a shell. Returns whether
+    /// anything was reloaded.
     pub fn reload_if_changed(&mut self, config: &Config) -> bool {
         let stamp = fs::read(&self.path)
             .ok()
@@ -346,8 +404,10 @@ impl Store {
             return false;
         }
         let mut notes = Vec::new();
-        let (findings, stamp) = read_state(&self.path, &mut notes);
+        let (findings, suppressions, stamp) = read_state(&self.path, &mut notes);
         self.findings = findings;
+        self.suppressions = suppressions;
+        self.apply_suppressions_to_findings();
         self.stamp.set(stamp);
         self.max_findings = config.max_findings.max(1);
         for note in notes {
@@ -383,6 +443,12 @@ impl Store {
                 all.push(note);
             }
         }
+        if !self.suppressions.is_empty() {
+            all.push(format!(
+                "{}{SUPPRESSIONS_NOTE_SUFFIX}",
+                self.suppressions.len()
+            ));
+        }
         Report {
             findings: self.findings(),
             notes: all,
@@ -391,22 +457,17 @@ impl Store {
         }
     }
 
-    /// Folds in acknowledgements another process has made since we last read the
-    /// file.
+    /// Folds in monotonic state another process has written since our last read.
     ///
     /// [`Store::reload_if_changed`] runs at the *top* of a cycle, and a cycle on
-    /// a large session takes tens of seconds. An acknowledgement typed into a
-    /// shell during that window was written to the file, and then overwritten by
-    /// this run's save the moment the cycle finished — the badge came straight
-    /// back and the user's dismissal looked like it had done nothing. Observed
-    /// live, with the watcher running.
+    /// a large session takes tens of seconds. An acknowledgement or suppression
+    /// typed into a shell during that window must not be overwritten by this
+    /// run's save the moment the cycle finishes.
     ///
-    /// Acknowledgement is monotonic within a run, so merging is a union: if
-    /// either side has it acknowledged, it is acknowledged. `--forget` is
-    /// deliberately *not* merged — it empties the file, and a watcher that is
-    /// still looking at the same screen will report what is still on it, which
-    /// is what "forget" means as distinct from "acknowledge".
-    fn adopt_external_acknowledgements(&mut self) {
+    /// Acknowledgements and suppressions are monotonic within a run, so merging
+    /// is a union. `--forget` is deliberately *not* merged: it empties the file,
+    /// and a watcher looking at the same screen will report what is still there.
+    fn adopt_external_monotonic_state(&mut self) {
         let stamp = fs::read(&self.path)
             .ok()
             .map(|bytes| crate::model::digest(&STAMP_KEY, &String::from_utf8_lossy(&bytes)));
@@ -414,7 +475,7 @@ impl Store {
             return;
         }
         let mut notes = Vec::new();
-        let (theirs, _) = read_state(&self.path, &mut notes);
+        let (theirs, their_suppressions, _) = read_state(&self.path, &mut notes);
         for other in theirs {
             if !other.acknowledged {
                 continue;
@@ -423,6 +484,12 @@ impl Store {
                 ours.acknowledged = true;
             }
         }
+        for suppression in their_suppressions {
+            if !self.suppressions.contains(&suppression) {
+                self.suppressions.push(suppression);
+            }
+        }
+        self.apply_suppressions_to_findings();
         // Deliberately silent about read problems here: `reload_if_changed` at
         // the top of the next cycle reports them, and a save is not the place to
         // start narrating.
@@ -432,7 +499,7 @@ impl Store {
     /// a rename. A daemon killed mid-write cannot leave a half-written file that
     /// loses every acknowledgement.
     pub fn save(&mut self) -> Result<()> {
-        self.adopt_external_acknowledgements();
+        self.adopt_external_monotonic_state();
         let dir = self
             .path
             .parent()
@@ -442,6 +509,11 @@ impl Store {
         let file = StoredFile {
             version: FILE_VERSION,
             findings: self.findings.iter().map(StoredFinding::from).collect(),
+            suppressions: self
+                .suppressions
+                .iter()
+                .map(StoredSuppression::from)
+                .collect(),
         };
         let mut body = serde_json::to_string_pretty(&file)?;
         body.push('\n');
@@ -479,6 +551,41 @@ impl Store {
     fn push_note(&mut self, note: String) {
         if !self.notes.contains(&note) {
             self.notes.push(note);
+        }
+    }
+
+    fn finding_index(&self, id: &str) -> Option<usize> {
+        let needle = id.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        if let Some(index) = self
+            .findings
+            .iter()
+            .position(|finding| finding.id == needle)
+        {
+            return Some(index);
+        }
+        let mut hits = self
+            .findings
+            .iter()
+            .enumerate()
+            .filter(|(_, finding)| finding.id.starts_with(&needle));
+        match (hits.next(), hits.next()) {
+            (Some((index, _)), None) => Some(index),
+            _ => None,
+        }
+    }
+
+    fn apply_suppressions_to_findings(&mut self) {
+        for finding in &mut self.findings {
+            if self
+                .suppressions
+                .iter()
+                .any(|entry| entry.rule == finding.pattern && entry.digest == finding.digest)
+            {
+                finding.acknowledged = true;
+            }
         }
     }
 
@@ -548,6 +655,8 @@ struct StoredFile {
     version: u32,
     #[serde(default)]
     findings: Vec<StoredFinding>,
+    #[serde(default)]
+    suppressions: Vec<StoredSuppression>,
 }
 
 /// One persisted finding.
@@ -589,6 +698,32 @@ struct StoredFinding {
     last_seen: u64,
     #[serde(default)]
     acknowledged: bool,
+}
+
+/// One persisted suppression, with every field named by hand so a future model
+/// change cannot silently put a value on disk.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct StoredSuppression {
+    rule: String,
+    digest: u64,
+}
+
+impl From<&Suppression> for StoredSuppression {
+    fn from(suppression: &Suppression) -> Self {
+        Self {
+            rule: suppression.rule.clone(),
+            digest: suppression.digest,
+        }
+    }
+}
+
+impl StoredSuppression {
+    fn into_suppression(self) -> Suppression {
+        Suppression {
+            rule: self.rule,
+            digest: self.digest,
+        }
+    }
 }
 
 impl From<&Finding> for StoredFinding {
@@ -649,33 +784,42 @@ impl StoredFinding {
     }
 }
 
-/// Reads the findings file. Returns the findings and the change stamp.
+/// Reads the findings file. Returns findings, suppressions, and the change stamp.
 ///
 /// Every failure below is a note rather than an error: the scanner has to keep
 /// running. But none of them is silent, because an empty report from a store
 /// that could not be read looks exactly like a clean session.
-fn read_state(path: &Path, notes: &mut Vec<String>) -> (Vec<Finding>, Option<u64>) {
+fn read_state(
+    path: &Path,
+    notes: &mut Vec<String>,
+) -> (Vec<Finding>, Vec<Suppression>, Option<u64>) {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), None),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return (Vec::new(), Vec::new(), None);
+        }
         Err(err) => {
             notes.push(format!(
                 "could not read the findings file {} ({err}) — this report shows no history, \
                  which is not the same as a clean session",
                 path.display()
             ));
-            return (Vec::new(), None);
+            return (Vec::new(), Vec::new(), None);
         }
     };
     let stamp = Some(crate::model::digest(&STAMP_KEY, &raw));
     if raw.trim().is_empty() {
-        return (Vec::new(), stamp);
+        return (Vec::new(), Vec::new(), stamp);
     }
     match serde_json::from_str::<StoredFile>(&raw) {
         Ok(file) => (
             file.findings
                 .into_iter()
                 .map(StoredFinding::into_finding)
+                .collect(),
+            file.suppressions
+                .into_iter()
+                .map(StoredSuppression::into_suppression)
                 .collect(),
             stamp,
         ),
@@ -694,7 +838,7 @@ fn read_state(path: &Path, notes: &mut Vec<String>) -> (Vec<Finding>, Option<u64
                     String::new()
                 }
             ));
-            (Vec::new(), None)
+            (Vec::new(), Vec::new(), None)
         }
     }
 }

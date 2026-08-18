@@ -17,7 +17,7 @@ Scanning:
   --once              Scan every agent pane once, print the findings, exit
   --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
-  --watch             Live findings pane (a acknowledges, A acknowledges all)
+  --watch             Live findings pane (a acknowledges, s permanently suppresses)
   --rules [PANE|PATH] List active rules for the base, pane, or working directory
                       A context containing `:` is read as a pane id; anything
                       else is read as a working-directory path. Which one was
@@ -26,8 +26,10 @@ Scanning:
 
 Findings:
   --ack <ID>          Acknowledge one finding by id or id prefix
+  --suppress <ID>     Acknowledge and permanently suppress its exact value
+  --suppressions      List active suppressions (rule and short digest only)
   --ack-all           Acknowledge every current finding
-  --forget            Clear the findings store entirely
+  --forget            Clear findings and permanent suppressions
 
 Watcher:
   --enable            Start the background pane watcher
@@ -62,8 +64,8 @@ fn main() {
 
 /// Options that take a value, and so must never be mistaken for the verb.
 ///
-/// `--ack` and `--explain` are deliberately absent: each takes a value *and* is
-/// the verb, so it has to be returned rather than skipped over.
+/// `--ack`, `--explain` and `--suppress` are deliberately absent: each takes a
+/// value *and* is the verb, so it has to be returned rather than skipped over.
 const VALUED: [&str; 2] = ["--interval", "--lines"];
 
 /// The verb is the first argument that is not an option or an option's value, so
@@ -111,6 +113,8 @@ fn run(args: &[String]) -> Result<()> {
         "--rules" => rules(args, &config::load_with_args(args)?),
         "--explain" => explain(args),
         "--ack" => acknowledge(args),
+        "--suppress" => suppress(args),
+        "--suppressions" => suppressions(),
         "--ack-all" => acknowledge_all(),
         "--forget" => forget(),
         "--enable" => daemon::enable(args),
@@ -301,6 +305,35 @@ fn acknowledge(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn suppress(args: &[String]) -> Result<()> {
+    let id = config::value_arg(args, "--suppress")?.ok_or("--suppress needs a finding id")?;
+    let config = config::load()?;
+    let mut store = Store::load(&config);
+    let count = store.suppress(id.trim());
+    if count == 0 {
+        return Err(format!("no finding matches `{id}`").into());
+    }
+    store.save()?;
+    println!(
+        "redact: suppressed {count} finding(s) permanently; each exact value will be ignored \
+         globally across panes for that rule."
+    );
+    Ok(())
+}
+
+fn suppressions() -> Result<()> {
+    let config = config::load()?;
+    let store = Store::load(&config);
+    if store.suppressions().is_empty() {
+        println!("redact: no permanent suppressions are active.");
+        return Ok(());
+    }
+    for suppression in store.suppressions() {
+        println!("{}\t{}", suppression.rule(), suppression.short_digest());
+    }
+    Ok(())
+}
+
 fn acknowledge_all() -> Result<()> {
     let config = config::load()?;
     let mut store = Store::load(&config);
@@ -313,9 +346,12 @@ fn acknowledge_all() -> Result<()> {
 fn forget() -> Result<()> {
     let config = config::load()?;
     let mut store = Store::load(&config);
-    let count = store.forget_all();
+    let suppressions = store.suppression_count();
+    let findings = store.forget_all();
     store.save()?;
-    println!("redact: forgot {count} finding(s).");
+    println!(
+        "redact: forgot {findings} finding(s) and cleared {suppressions} permanent suppression(s)."
+    );
     Ok(())
 }
 
@@ -371,6 +407,7 @@ mod tests {
         // `--once` and the acknowledgement would never happen.
         assert_eq!(verb_of(&args(&["--ack", "a1b2c3"])), "--ack");
         assert_eq!(verb_of(&args(&["--lines", "800", "--ack", "a1"])), "--ack");
+        assert_eq!(verb_of(&args(&["--suppress", "a1b2c3"])), "--suppress");
     }
 
     #[test]
