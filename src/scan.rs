@@ -226,7 +226,7 @@ impl Rules {
         // that can have something to say: an unknown pack name is reported and
         // ignored rather than failing, so a typo narrows the rule set in the
         // open rather than in silence.
-        let (enabled_packs, notes) = selected_rule_packs(&config.rule_packs);
+        let (enabled_packs, mut notes) = selected_rule_packs(&config.rule_packs);
         let mut rules = builtin_rules(config.env_assignments, &enabled_packs);
         for pattern in &config.patterns {
             let name = pattern.name.trim();
@@ -269,6 +269,10 @@ impl Rules {
         }
 
         let (names, packs) = names_and_packs_of(&rules);
+        // Overlay parsing is deliberately lenient, so its diagnostics ride along
+        // with anything pack selection had to say. An overlay that was ignored
+        // has to be visible in every effective rule set it did not reach.
+        notes.extend(config.notes.iter().cloned());
 
         Ok(Self {
             names,

@@ -312,7 +312,10 @@ Scanning:
   --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
   --watch             Live findings pane (a acknowledges, s permanently suppresses)
-  --rules             List the active detection rules and exit
+  --rules [PANE|PATH] List active rules for the base, pane, or working directory
+                      A context containing `:` is read as a pane id; anything
+                      else is read as a working-directory path. Which one was
+                      used is reported, so a mistyped pane id is visible
   --explain <RULE>    Explain one active detection rule and exit
 
 Findings:
@@ -393,6 +396,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | `allowlist` | `[]` | Regexes that suppress a finding. A finding is dropped when one matches either the value or the line it was found on. |
 | `ignore_panes` | `[]` | Pane ids never read at all. The escape hatch for a pane that is deliberately full of test credentials. |
 | `max_findings` | `500` | Cap on stored findings, so one pathological pane cannot grow the state file without bound. Oldest acknowledged findings are dropped first. |
+| `overlays` | `[]` | Pane-context overrides selected by workspace id, workspace label, or working-directory path prefix. |
 
 A config file that still sets `entropy` is ignored, exactly as any unknown key is.
 
@@ -431,8 +435,70 @@ you are looking right at it, and a rule silently dropped is a rule you think is 
 scanning path, on the other hand, falls back to the built-in rules and says so in its notes, because
 one bad line in a config file must not be able to stop the scanner.
 
-`redact --rules` prints what is actually active, which is the answer to "is my pattern working" that
-does not involve trusting this README.
+`redact --rules` prints the base rule set. Pass a current pane id
+(`redact --rules w1:p2`) or a working-directory path
+(`redact --rules /home/me/repos/company-app`) to print the effective rules for
+that context, which answers "is my pattern working here" without trusting this
+README.
+
+The two are told apart by a single rule: **a context containing a `:` is read as
+a pane id, and anything else is read as a working-directory path.** So
+`redact --rules myword` is a relative-path lookup, not a pane lookup, and it
+matches no overlay. Which reading was used is printed before the listing, so a
+pane id typed wrongly shows up as a path rather than as an empty result.
+
+### Per-workspace and per-repository overlays
+
+An overlay has a `match` object containing exactly one of `workspace_id`,
+`workspace_label`, or `path_prefix`, plus any of the optional configuration keys
+from the table above. A path prefix is matched against the pane working
+directory reported by `session.snapshot`; redact never walks the working tree or
+looks for a `.git` directory.
+
+This configuration keeps a personal-key detector active everywhere, but
+allowlists its distinctive test value in a noisy company repository. A pane in
+the personal repository still reports the same value:
+
+```json
+{
+  "patterns": [
+    {
+      "name": "personal_api_key",
+      "label": "Personal API key",
+      "regex": "\\bpersonal_pk_[A-Za-z0-9]{24}\\b"
+    }
+  ],
+  "overlays": [
+    {
+      "match": {
+        "path_prefix": "/home/me/work/company-app"
+      },
+      "allowlist": [
+        "\\bpersonal_pk_EXAMPLEEXAMPLEEXAMPLE\\b"
+      ],
+      "notify": false
+    }
+  ]
+}
+```
+
+The other matcher forms are `"match": {"workspace_id": "w3"}` and
+`"match": {"workspace_label": "Company"}`.
+
+Overlay order is significant. For each scalar (`interval_seconds`, `lines`,
+`scan_all_panes`, `env_assignments`, `notify`, and `max_findings`), the first
+matching overlay that sets it wins. Lists (`patterns`, `allowlist`, and
+`ignore_panes`) from **all** matching overlays append to the base lists in file
+order; overlays never replace a list. Path prefixes are also applied in file
+order, not longest-prefix order, so a matching short prefix followed by a
+matching longer prefix contributes both lists in that declared order.
+
+A malformed overlay is ignored with a note while the top-level configuration
+continues to scan. It never turns a configuration typo into a dead scanner. An
+empty or whitespace-only `path_prefix` counts as malformed for that purpose:
+every path starts with the empty one, so honouring it would silently apply the
+overlay to every pane in the session. There is no catch-all matcher, on purpose
+— an overlay that matches more than you meant looks exactly like one that works.
 
 ## Widening the scan
 
