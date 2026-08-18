@@ -45,8 +45,9 @@ Everything else about it is built to make that safe:
   "verify this key is live" call to a provider. The only thing it talks to is herdr's local socket.
 - **It never writes to your panes.** See [what this does not do](#what-this-does-not-do).
 
-Findings are kept on your machine, under `~/.local/state/herdr/plugins/moneycaringcoder.redact/`, and
-`redact --forget` empties that file.
+Findings and permanent suppressions are kept on your machine, under
+`~/.local/state/herdr/plugins/moneycaringcoder.redact/`. `redact --forget` clears both while leaving
+the installation's digest key in place.
 
 ## Why
 
@@ -147,10 +148,17 @@ something inconvenient rather than something flattering:
 An acknowledged finding stays in the table, marked `✓` and sorted below the live ones, because the
 value is still sitting in that pane's scrollback.
 
-`a` acknowledges the selected finding, `A` acknowledges every one of them, `j`/`k` or the arrow keys
-move the selection, and `q` quits. The view reflows down to very narrow panes. Where a pane is too
-narrow for a table, each finding is stacked and the agent, working directory, and foreground process
-when first seen appear on following lines when herdr supplied them.
+`a` acknowledges the selected finding. `s` acknowledges it **and permanently suppresses that exact
+value for that rule**. The suppression is global across panes, so the same false positive printed in
+another pane stays quiet; it does not suppress a different value from that rule or the same value
+reported by a different rule. The store records only the rule's machine name and the keyed digest,
+never the value or a regex that could match more than intended. The findings view and JSON report
+always disclose the number of active suppressions.
+
+`A` acknowledges every finding, `j`/`k` or the arrow keys move the selection, and `q` quits. The view
+reflows down to very narrow panes. Where a pane is too narrow for a table, each finding is stacked and
+the agent, working directory, and foreground process when first seen appear on following lines when
+herdr supplied them.
 
 **A scan that found nothing and a scan that could not look do not render the same.** Six panes scanned
 and clean says so in words; a cycle that hit a problem says the scan did not complete cleanly and
@@ -300,13 +308,15 @@ Usage: redact [VERB]
 Scanning:
   --once              Scan every agent pane once, print the findings, exit
   --json              Print the same findings as JSON and exit
-  --watch             Live findings pane (a acknowledges, A acknowledges all)
+  --watch             Live findings pane (a acknowledges, s permanently suppresses)
   --rules             List the active detection rules and exit
 
 Findings:
   --ack <ID>          Acknowledge one finding by id or id prefix
+  --suppress <ID>     Acknowledge and permanently suppress its exact value
+  --suppressions      List active suppressions (rule and short digest only)
   --ack-all           Acknowledge every current finding
-  --forget            Clear the findings store entirely
+  --forget            Clear findings and permanent suppressions
 
 Watcher:
   --enable            Start the background pane watcher
@@ -333,6 +343,11 @@ anywhere: findings record the rule name, the pane, and a masked preview.
 
 Options may come before or after the verb, so `redact --lines 800 --once` and
 `redact --once --lines 800` are the same command.
+
+`redact --suppress <ID>` is the command-line equivalent of pressing `s`. `redact --suppressions`
+lists only each active rule name and a short keyed digest, never a preview. Suppression is permanent
+until `redact --forget` clears it, matches exactly one value for one rule, and applies globally across
+panes.
 
 The watcher is off until you enable it. Once enabled it survives a herdr restart and a
 `herdr update --handoff`: a startup hook re-spawns it, but only if you had it enabled when herdr went

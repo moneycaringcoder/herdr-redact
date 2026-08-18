@@ -205,7 +205,60 @@ fn an_acknowledgement_survives_a_save_and_a_reload() {
 }
 
 #[test]
-fn a_state_file_from_before_provenance_loads_without_a_note() {
+fn a_suppression_survives_reload_and_drops_the_value_in_every_pane() {
+    let state = StateDir::new();
+    let config = config(500);
+
+    {
+        let mut store = Store::load(&config);
+        let fresh = store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+        assert_eq!(store.suppress(&fresh[0].id), 1);
+        assert!(only(&store.findings()).acknowledged);
+        store.save().expect("save");
+    }
+
+    let mut store = Store::load(&config);
+    assert_eq!(store.suppression_count(), 1);
+    assert!(
+        store
+            .observe(&pane("wF:p9"), &[a_match("aws_access_key_id", 7)], 200)
+            .is_empty(),
+        "the exact value must stay suppressed after reload and across panes"
+    );
+    assert_eq!(
+        store.findings().len(),
+        1,
+        "the suppressed sighting must not become a second finding"
+    );
+    drop(state);
+}
+
+#[test]
+fn a_suppression_is_specific_to_both_rule_and_digest() {
+    let state = StateDir::new();
+    let config = config(500);
+    let mut store = Store::load(&config);
+    let fresh = store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+    assert_eq!(store.suppress(&fresh[0].id), 1);
+
+    let different_value = store.observe(&pane("wF:p9"), &[a_match("aws_access_key_id", 8)], 200);
+    assert_eq!(
+        different_value.len(),
+        1,
+        "a different value from the same rule must remain visible"
+    );
+
+    let different_rule = store.observe(&pane("wF:p9"), &[a_match("custom_aws_detector", 7)], 300);
+    assert_eq!(
+        different_rule.len(),
+        1,
+        "the same value from a different rule must remain visible"
+    );
+    drop(state);
+}
+
+#[test]
+fn a_state_file_from_before_suppressions_and_provenance_loads_cleanly() {
     let state = StateDir::new();
     fs::write(
         state.findings_file(),
@@ -239,6 +292,11 @@ fn a_state_file_from_before_provenance_loads_without_a_note() {
     assert!(finding.cwd.is_none());
     assert!(finding.foreground_process_name_when_first_seen.is_none());
     assert!(finding.foreground_process_pid_when_first_seen.is_none());
+    assert_eq!(
+        store.suppression_count(),
+        0,
+        "the defaulted suppression section must be empty"
+    );
     assert!(
         store.report(Vec::new()).notes.is_empty(),
         "an additive old shape must not be reported as malformed"
@@ -549,12 +607,19 @@ fn forget_all_empties_the_store_and_keeps_the_key() {
     let mut store = Store::load(&config);
     let key = *store.key();
 
-    store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+    let fresh = store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+    assert_eq!(store.suppress(&fresh[0].id), 1);
+    assert_eq!(store.suppression_count(), 1);
     assert_eq!(store.forget_all(), 1);
     store.save().expect("save");
 
     let reloaded = Store::load(&config);
     assert!(reloaded.findings().is_empty());
+    assert_eq!(
+        reloaded.suppression_count(),
+        0,
+        "forget_all must clear permanent suppressions too"
+    );
     assert_eq!(
         *reloaded.key(),
         key,
@@ -573,7 +638,8 @@ fn the_persisted_file_contains_no_secret() {
     // The digest is keyed with the store's own key, exactly as `scan` would
     // have produced it for this credential in this installation.
     let digest = redact::model::digest(store.key(), FAKE_CREDENTIAL);
-    store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", digest)], 100);
+    let fresh = store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", digest)], 100);
+    assert_eq!(store.suppress(&fresh[0].id), 1);
     store.save().expect("save");
 
     let raw = state.read_findings_file();
@@ -589,6 +655,20 @@ fn the_persisted_file_contains_no_secret() {
         "the masked preview is stored"
     );
     assert!(raw.contains("wE:p2"));
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("valid state JSON");
+    let suppression = json["suppressions"][0]
+        .as_object()
+        .expect("one suppression object");
+    assert_eq!(
+        suppression
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["digest".to_string(), "rule".to_string()]
+            .into_iter()
+            .collect(),
+        "the on-disk suppression may carry only the rule and keyed digest"
+    );
 
     let mode = fs::metadata(state.findings_file())
         .expect("findings file")
