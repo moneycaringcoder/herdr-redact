@@ -15,6 +15,7 @@ Scanning:
   --json              Print the same findings as JSON and exit
   --watch             Live findings pane (a acknowledges, A acknowledges all)
   --rules             List the active detection rules and exit
+  --explain <RULE>    Explain one active detection rule and exit
 
 Findings:
   --ack <ID>          Acknowledge one finding by id or id prefix
@@ -54,8 +55,8 @@ fn main() {
 
 /// Options that take a value, and so must never be mistaken for the verb.
 ///
-/// `--ack` is deliberately absent: it takes a value *and* is the verb, so it has
-/// to be returned rather than skipped over.
+/// `--ack` and `--explain` are deliberately absent: each takes a value *and* is
+/// the verb, so it has to be returned rather than skipped over.
 const VALUED: [&str; 2] = ["--interval", "--lines"];
 
 /// The verb is the first argument that is not an option or an option's value, so
@@ -77,6 +78,14 @@ fn verb_of(args: &[String]) -> &str {
         if arg == "--all-panes" {
             continue;
         }
+        // `--explain=jwt` is one argument carrying its own value. The verb is
+        // still `--explain`; `value_arg` reads the half after the `=`. Only the
+        // new verb does this. `--ack` has taken the space-separated form alone
+        // since 0.1.0, and quietly changing an existing verb's parsing is not
+        // this change's business.
+        if arg.starts_with("--explain=") {
+            return "--explain";
+        }
         return arg;
     }
     "--once"
@@ -90,6 +99,7 @@ fn run(args: &[String]) -> Result<()> {
         "--json" => render::run_json(&config::load_with_args(args)?),
         "--watch" => render::run_watch(&config::load_with_args(args)?),
         "--rules" => rules(&config::load_with_args(args)?),
+        "--explain" => explain(args),
         "--ack" => acknowledge(args),
         "--ack-all" => acknowledge_all(),
         "--forget" => forget(),
@@ -130,6 +140,62 @@ fn rules(config: &config::Config) -> Result<()> {
         eprintln!("redact: {note}");
     }
     Ok(())
+}
+
+fn explain(args: &[String]) -> Result<()> {
+    let name = config::value_arg(args, "--explain")?.ok_or("--explain needs a rule name")?;
+    let name = name.trim();
+    let rules = redact::scan::Rules::compile(&config::load()?)?;
+
+    if let Some(explanation) = rules.explanation(name) {
+        println!("Rule: {}", explanation.name);
+        println!("Label: {}", explanation.label);
+        println!("Confidence: {}", explanation.confidence.as_str());
+        println!();
+        for line in wrap(&explanation.text, 80) {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+
+    let suggestions: Vec<&str> = rules
+        .names
+        .iter()
+        .map(|(rule_name, _)| rule_name.as_str())
+        .filter(|rule_name| rule_name.starts_with(name) || rule_name.contains(name))
+        .collect();
+    let mut message = format!("unknown rule `{name}`");
+    if suggestions.is_empty() {
+        message.push_str(
+            "\nno active rule names contain that query; run `redact --rules` to list them",
+        );
+    } else {
+        message.push_str("\npossible matches:");
+        for suggestion in suggestions {
+            message.push_str("\n  ");
+            message.push_str(suggestion);
+        }
+    }
+    Err(message.into())
+}
+
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(line);
+            line = String::new();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn acknowledge(args: &[String]) -> Result<()> {
@@ -213,5 +279,23 @@ mod tests {
         // `--once` and the acknowledgement would never happen.
         assert_eq!(verb_of(&args(&["--ack", "a1b2c3"])), "--ack");
         assert_eq!(verb_of(&args(&["--lines", "800", "--ack", "a1"])), "--ack");
+    }
+
+    #[test]
+    fn explain_takes_a_value_and_is_still_the_verb() {
+        assert_eq!(verb_of(&args(&["--explain", "jwt"])), "--explain");
+        assert_eq!(
+            verb_of(&args(&["--lines", "800", "--explain", "jwt"])),
+            "--explain"
+        );
+        // Both spellings reach the verb. Without the `=` arm this one resolves
+        // to the whole argument and the user is told `--explain=jwt` is an
+        // unknown verb, which is a papercut with an obvious cause and no
+        // obvious fix from the outside.
+        assert_eq!(verb_of(&args(&["--explain=jwt"])), "--explain");
+        assert_eq!(
+            verb_of(&args(&["--explain=jwt", "--lines", "800"])),
+            "--explain"
+        );
     }
 }

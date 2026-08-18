@@ -36,6 +36,15 @@ at least one minor cycle.
   digest key, not even the state directory, because it never constructs the store
   in the first place. `--all-panes` is worth pairing with it: the noisiest surface
   is the one worth measuring.
+- `redact --explain <rule>`, which prints why a detection rule is shaped the way
+  it is: what it matches structurally, at what confidence, and what near-misses
+  it deliberately refuses. That reasoning was only in the README, and it is most
+  useful at the moment a rule fires or fails to. An unknown name lists the rules
+  whose names are close and exits non-zero; a name from your own `patterns` says
+  so rather than pretending to a built-in explanation. The explanations live
+  beside the rules in `src/scan.rs`, and a test asserts the README's rule table
+  and the compiled rule set still name the same rules at the same confidences,
+  so the table cannot drift from the code.
 
 ### Changed
 
@@ -48,6 +57,17 @@ at least one minor cycle.
   previously permitted, will now be refused.** If you are on one of those and
   redact worked for you, say so on the issue tracker and the floor can come back
   down with evidence behind it.
+
+### Removed
+
+- The `entropy` configuration key. It was accepted, did nothing, and recorded a
+  note saying so — a key you can set that silently changes nothing is worse than
+  no key, and this was never a feature waiting to be built. A Shannon-entropy
+  heuristic over terminal output is the false-positive machine this plugin
+  exists to avoid being, and the project has decided against it rather than
+  deferred it. A config file that still sets `entropy` keeps loading: it is now
+  an unknown key, and unknown keys are ignored, so nothing breaks and nothing
+  needs editing.
 
 ## [0.1.0] - 2026-08-16
 
