@@ -126,6 +126,8 @@ const WIDTHS: [usize; 6] = [MIN_COLUMNS, 24, 40, 47, 80, 200];
 /// never appears in any output.
 const FAKE_SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
 const FAKE_SECRET_PREVIEW: &str = "AKIA\u{2026}MPLE";
+const AWS_ROTATION_URL: &str =
+    "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html";
 
 /// The report's own clock. Fixed, so ages are deterministic.
 const NOW: u64 = 1_700_000_000;
@@ -341,6 +343,50 @@ fn every_finding_survives_every_width() {
             );
         }
     }
+}
+
+#[test]
+fn stacked_strong_finding_shows_rotation_link_without_changing_the_table() {
+    let report = Report {
+        findings: vec![finding("a1b2c3", "AWS access key ID", "claude")],
+        panes_scanned: 1,
+        generated_at: NOW,
+        ..Report::default()
+    };
+
+    let stacked = report_text(&report, 40);
+    let compact: String = stacked
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    assert!(
+        compact.contains(AWS_ROTATION_URL),
+        "rotation URL was lost while wrapping:\n{stacked}"
+    );
+    assert!(
+        flatten(&stacked).contains("rotation guidance:"),
+        "{stacked}"
+    );
+
+    let table = report_text(&report, 80);
+    assert!(!table.contains("rotation guidance:"), "{table}");
+    assert!(!table.contains(AWS_ROTATION_URL), "{table}");
+}
+
+#[test]
+fn stacked_strong_finding_without_provider_guidance_omits_it_cleanly() {
+    let mut found = finding("a1b2c3", "JSON Web Token", "claude");
+    found.pattern = "jwt".to_string();
+    let report = Report {
+        findings: vec![found],
+        panes_scanned: 1,
+        generated_at: NOW,
+        ..Report::default()
+    };
+
+    let stacked = report_text(&report, 40);
+    assert!(!stacked.contains("rotation guidance:"), "{stacked}");
+    assert!(!stacked.contains("https://"), "{stacked}");
 }
 
 #[test]

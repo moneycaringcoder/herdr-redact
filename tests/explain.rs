@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use redact::model::Confidence;
-use redact::scan::Rules;
+use redact::scan::{RotationGuidance, Rules};
 
 #[test]
 fn every_builtin_rule_has_an_explanation() {
@@ -26,6 +26,57 @@ fn every_builtin_rule_has_an_explanation() {
             );
         }
     }
+}
+
+#[test]
+fn every_builtin_rule_has_a_url_or_an_audited_exemption() {
+    const EXEMPT_RULES: [&str; 10] = [
+        "age_secret_key",
+        "aws_principal_id",
+        "docker_registry_auth",
+        "env_assignment",
+        "http_bearer_token",
+        "jdbc_url_password",
+        "jwt",
+        "multiline_credential",
+        "private_key_block",
+        "url_credentials",
+    ];
+
+    let expected_exemptions: BTreeSet<_> =
+        EXEMPT_RULES.into_iter().map(str::to_string).collect();
+    let mut actual_exemptions = BTreeSet::new();
+    for explanation in Rules::builtin().explanations() {
+        match explanation.rotation {
+            RotationGuidance::Url(url) => {
+                assert!(
+                    url.starts_with("https://"),
+                    "rule `{}` has a non-HTTPS rotation URL: {url}",
+                    explanation.name
+                );
+                assert!(
+                    !url.chars().any(char::is_whitespace),
+                    "rule `{}` has whitespace in its rotation URL: {url:?}",
+                    explanation.name
+                );
+                assert!(
+                    url.is_ascii(),
+                    "rule `{}` has a non-ASCII rotation URL: {url:?}",
+                    explanation.name
+                );
+            }
+            RotationGuidance::Exempt(reason) => {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "rule `{}` has an empty rotation exemption",
+                    explanation.name
+                );
+                actual_exemptions.insert(explanation.name);
+            }
+        }
+    }
+
+    assert_eq!(actual_exemptions, expected_exemptions);
 }
 
 #[test]

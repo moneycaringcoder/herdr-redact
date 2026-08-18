@@ -479,6 +479,11 @@ when the history you want to measure is older than the configured limit.
 Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Strong findings light
 `redact_secret`; weak ones light `redact_weak`.
 
+`redact --explain <rule>` also prints advisory rotation guidance. For provider-specific rules this is
+a plain-text link to the provider's own token-management or revocation page; redact never fetches the
+link and never opens a browser. Generic heuristics have no provider page by nature, because the value
+does not identify who issued it; `--explain` says that explicitly instead of guessing.
+
 Every built-in rule belongs to a named, versioned pack. The `default` pack at version 1 is the exact
 rule set that shipped before packs: configuring another pack only adds rules and never removes a
 default rule. Rule names are stable public interface and never change between packs. The compiled-in
@@ -573,8 +578,8 @@ not a feature that exists to be misfired. Specifically:
   anything it did not start.
 - **It never edits a repository.** It does not run git, does not touch files in your working tree, and
   has no opinion about your `.gitignore`.
-- **It never rotates or revokes anything.** It does not know how, and it never contacts a provider to
-  find out whether a key is live.
+- **It never rotates or revokes anything.** Rotation guidance is advisory text only. It never opens a
+  browser, fetches a guidance link, contacts a provider, or tries to find out whether a key is live.
 - **It never phones home.** No telemetry, no update check, no crash reporting. It makes no network
   calls of any kind; the only socket it opens is herdr's, on your machine.
 - **It never stores a secret**, in any file it writes, including the ones you would send a maintainer

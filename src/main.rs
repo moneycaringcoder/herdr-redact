@@ -2,7 +2,7 @@
 //!
 //! Verb dispatch only; every verb is implemented in the library crate.
 
-use redact::{config, daemon, findings::Store, render, setup, Result};
+use redact::{config, daemon, findings::Store, render, scan::RotationGuidance, setup, Result};
 
 const USAGE: &str = "\
 redact — credential warnings for herdr agent panes
@@ -168,6 +168,12 @@ fn explain(args: &[String]) -> Result<()> {
         println!("Rule: {}", explanation.name);
         println!("Label: {}", explanation.label);
         println!("Confidence: {}", explanation.confidence.as_str());
+        match explanation.rotation {
+            RotationGuidance::Url(url) => println!("Rotation guidance: {url}"),
+            RotationGuidance::Exempt(reason) => {
+                println!("Rotation guidance: no provider page — {reason}")
+            }
+        }
         println!();
         for line in wrap(&explanation.text, 80) {
             println!("{line}");
