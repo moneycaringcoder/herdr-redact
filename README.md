@@ -295,6 +295,7 @@ Scanning:
   --json              Print the same findings as JSON and exit
   --watch             Live findings pane (a acknowledges, A acknowledges all)
   --rules             List the active detection rules and exit
+  --explain <RULE>    Explain one active detection rule and exit
 
 Findings:
   --ack <ID>          Acknowledge one finding by id or id prefix
