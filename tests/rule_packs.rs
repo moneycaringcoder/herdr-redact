@@ -29,6 +29,7 @@ const DEFAULT_RULES: &[(&str, Confidence)] = &[
     ("url_credentials", Confidence::Weak),
     ("http_bearer_token", Confidence::Weak),
     ("env_assignment", Confidence::Weak),
+    ("multiline_credential", Confidence::Weak),
 ];
 
 fn compiled_names(rules: &Rules) -> Vec<(&str, Confidence)> {

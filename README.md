@@ -515,6 +515,7 @@ confidence columns; custom patterns have no compiled-in pack or version and show
 | `url_credentials` | a password embedded in a URL, `scheme://user:pass@host` | weak |
 | `http_bearer_token` | `Authorization: Bearer …` | weak |
 | `env_assignment` | `FOO_TOKEN=…` and `foo_secret: …` at the start of a line | weak |
+| `multiline_credential` | secret-looking JSON/YAML keys whose quoted or block-scalar value continues on later lines | weak |
 
 ### What is deliberately not caught
 
@@ -537,6 +538,9 @@ Precision is the product, so several obvious candidates are left out on purpose:
   already see and break allowlists that key on the old name.
 - **Legacy Vault `s.` tokens.** A two-character prefix, one character of which is a full stop, cannot
   support a strong claim. Only the modern `hvs.`, `hvb.`, and `hvr.` forms are matched.
+- **Multi-line joins starting at bare `auth`.** `auth` does not pass the secret-name filter: widening
+  that filter would make ordinary authentication configuration noisy. Pretty-printed Docker
+  `config.json` keeps its base64 value on one line, where `docker_registry_auth` already covers it.
 - **Generic "high-entropy" strings.** A 32- or 40-character hex or base64 run with no surrounding
   context is a commit id, a checksum, a UUID, an image blob, or a minified bundle far more often than
   it is a key.
