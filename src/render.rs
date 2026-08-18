@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::config::Config;
-use crate::findings::Store;
+use crate::findings::{Store, SUPPRESSIONS_NOTE_SUFFIX};
 use crate::model::{Alert, Calibration, Confidence, Finding, Report};
 use crate::{daemon, Result};
 
@@ -441,6 +441,7 @@ fn summary_lines(report: &Report) -> Vec<String> {
     let total = report.findings.len();
     let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
     let live = total - acknowledged;
+    let suppressions = active_suppression_count(report);
 
     if total == 0 {
         // Four different reasons for an empty table, and the user has to be able
@@ -489,6 +490,12 @@ fn summary_lines(report: &Report) -> Vec<String> {
             ));
         }
     }
+    if suppressions > 0 {
+        lines.push(format!(
+            "{suppressions}{SUPPRESSIONS_NOTE_SUFFIX} Each ignores one exact value for one rule, \
+             globally across panes."
+        ));
+    }
 
     // Never folded into the skipped count. "We chose not to look" and "we tried
     // and failed" are opposite claims, and a reader who cannot tell them apart
@@ -509,7 +516,7 @@ fn summary_lines(report: &Report) -> Vec<String> {
         ));
     }
 
-    if !report.notes.is_empty() {
+    if report.notes.iter().any(|note| !is_suppression_note(note)) {
         // Deliberately does not contain the phrase "nothing found": a reader
         // skimming, or a script grepping, must not be able to take those two
         // words out of a report that says the opposite.
@@ -521,6 +528,22 @@ fn summary_lines(report: &Report) -> Vec<String> {
     }
 
     lines
+}
+
+fn active_suppression_count(report: &Report) -> usize {
+    report
+        .notes
+        .iter()
+        .find_map(|note| {
+            note.strip_suffix(SUPPRESSIONS_NOTE_SUFFIX)
+                .and_then(|count| count.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn is_suppression_note(note: &str) -> bool {
+    note.strip_suffix(SUPPRESSIONS_NOTE_SUFFIX)
+        .is_some_and(|count| count.parse::<usize>().is_ok())
 }
 
 fn panes(count: usize) -> String {
@@ -720,13 +743,17 @@ fn push_legend(out: &mut String, report: &Report, width: usize) {
 /// would not compile, a read that failed. They belong on screen: silently
 /// dropping them renders as a suspiciously clean report.
 fn notes_section(notes: &[String], width: usize) -> String {
+    let visible: Vec<&String> = notes
+        .iter()
+        .filter(|note| !is_suppression_note(note))
+        .collect();
     let mut out = String::new();
-    if notes.is_empty() {
+    if visible.is_empty() {
         return out;
     }
     out.push('\n');
     push_line(&mut out, "notes", width);
-    for note in notes {
+    for note in visible {
         push_wrapped(&mut out, "  ", "    ", note, width);
     }
     out
@@ -851,6 +878,12 @@ pub fn report_json_with_quiet(report: &Report, quiet_until: Option<u64>, now: u6
 
     let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
     let quiet_remaining = quiet_until.map(|until| until.saturating_sub(now));
+    let suppressions = active_suppression_count(report);
+    let notes: Vec<&String> = report
+        .notes
+        .iter()
+        .filter(|note| !is_suppression_note(note))
+        .collect();
     let value = json!({
         // Bumped only when a key changes meaning, so a script can refuse a
         // shape it does not understand rather than misread it.
@@ -861,13 +894,14 @@ pub fn report_json_with_quiet(report: &Report, quiet_until: Option<u64>, now: u6
             "findings": report.findings.len(),
             "unacknowledged": report.findings.len() - acknowledged,
             "acknowledged": acknowledged,
+            "suppressions": suppressions,
             "panes_scanned": report.panes_scanned,
             "panes_skipped": report.panes_skipped,
             "panes_unread": report.panes_unread,
             "panes_truncated": report.panes_truncated,
-            "notes": report.notes.len(),
+            "notes": notes.len(),
         },
-        "notes": report.notes,
+        "notes": notes,
         "quiet": {
             "active": quiet_until.is_some(),
             "until": quiet_until,
@@ -1076,8 +1110,9 @@ const RESET_ATTRS: &str = "\u{1b}[0m";
 /// keystroke is never held for a whole cycle.
 const TICK: Duration = Duration::from_millis(80);
 
-/// Live findings pane: `a` acknowledges the selected finding, `A` acknowledges
-/// them all, `q` quits, `j`/`k` and the arrow keys move the selection.
+/// Live findings pane: `a` acknowledges the selected finding, `s` acknowledges
+/// it and permanently suppresses its exact value, `A` acknowledges them all,
+/// `q` quits, and `j`/`k` and the arrow keys move the selection.
 ///
 /// This runs inside a herdr overlay pane, so it clears and redraws in place
 /// rather than scrolling, sizes itself from the real terminal every frame, and
@@ -1176,6 +1211,10 @@ fn watch_loop(
                         status = Some(acknowledge_selected(config, report.as_ref(), selected));
                         due = true;
                     }
+                    tty::Key::Suppress => {
+                        status = Some(suppress_selected(config, report.as_ref(), selected));
+                        due = true;
+                    }
                     tty::Key::AckAll => {
                         status = Some(acknowledge_all(config));
                         due = true;
@@ -1217,6 +1256,26 @@ fn acknowledge_selected(config: &Config, report: Option<&Report>, selected: usiz
     match store.save() {
         Ok(()) => format!("acknowledged {short}."),
         Err(err) => format!("could not save the acknowledgement of {short}: {err}"),
+    }
+}
+
+fn suppress_selected(config: &Config, report: Option<&Report>, selected: usize) -> String {
+    let Some(finding) = report.and_then(|report| report.findings.get(selected)) else {
+        return "nothing to suppress.".to_string();
+    };
+    let id = finding.id.clone();
+    let short = finding.short_id().to_string();
+    let mut store = Store::load(config);
+    let count = store.suppress(&id);
+    if count == 0 {
+        return format!("{short} is no longer in the store.");
+    }
+    match store.save() {
+        Ok(()) => format!(
+            "suppressed {short} permanently; this exact value will be ignored globally across \
+             panes."
+        ),
+        Err(err) => format!("could not save the permanent suppression of {short}: {err}"),
     }
 }
 
@@ -1278,7 +1337,8 @@ fn frame(
     out.push('\n');
     push_wrapped(&mut out, "", "  ", &watcher_line(config), width);
     let keys = if interactive {
-        "a acknowledge \u{b7} A acknowledge all \u{b7} j/k or arrows move \u{b7} q quit"
+        "a acknowledge · s suppress exact value permanently · A acknowledge all · j/k or arrows \
+         move · q quit"
     } else {
         "stdin is not a terminal here, so keys are disabled; this pane only refreshes."
     };
@@ -1434,6 +1494,7 @@ mod tty {
         Up,
         Down,
         Ack,
+        Suppress,
         AckAll,
         Quit,
     }
@@ -1553,6 +1614,7 @@ mod tty {
                 }
                 b'q' | b'Q' | 0x03 => keys.push(Key::Quit),
                 b'a' => keys.push(Key::Ack),
+                b's' => keys.push(Key::Suppress),
                 b'A' => keys.push(Key::AckAll),
                 b'j' => keys.push(Key::Down),
                 b'k' => keys.push(Key::Up),
@@ -1579,6 +1641,7 @@ mod tty {
         fn acknowledging_one_is_not_acknowledging_all() {
             assert_eq!(decode(b"a"), vec![Key::Ack]);
             assert_eq!(decode(b"A"), vec![Key::AckAll]);
+            assert_eq!(decode(b"s"), vec![Key::Suppress]);
         }
 
         #[test]
@@ -1606,6 +1669,7 @@ mod tty {
         Up,
         Down,
         Ack,
+        Suppress,
         AckAll,
         Quit,
     }

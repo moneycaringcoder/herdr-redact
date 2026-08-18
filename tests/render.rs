@@ -1,8 +1,8 @@
 //! Formatting tests for the badge string, the findings table, and the JSON
 //! snapshot.
 //!
-//! These are pure: nothing here talks to herdr. Every fixture is a hand-built
-//! `Report`, and every assertion is about the text that comes out.
+//! These exercise only local state and formatting: nothing here talks to herdr,
+//! and every assertion is about the text that comes out.
 //!
 //! Two things are load-bearing about how they are written.
 //!
@@ -17,7 +17,11 @@
 //! `no_rendering_contains_the_secret` can assert its absence from every string
 //! this module can produce. Nothing here may ever hold a real one.
 
-use redact::model::{Alert, Calibration, CalibrationHit, Confidence, Finding, Match, Report};
+use redact::config::Config;
+use redact::findings::Store;
+use redact::model::{
+    Alert, Calibration, CalibrationHit, Confidence, Finding, Match, PaneRef, Report,
+};
 use redact::render::{
     abbreviate, badge, calibration_text, report_json, report_json_with_quiet, report_text,
     report_text_with_quiet, BADGE_COLUMNS, MIN_COLUMNS,
@@ -416,6 +420,60 @@ fn nothing_found_says_how_many_panes_were_looked_at() {
         flatten(&text).contains("6 panes scanned, nothing found"),
         "{text}"
     );
+}
+
+#[test]
+fn active_suppressions_are_visible_even_when_there_are_no_findings() {
+    let dir =
+        std::env::temp_dir().join(format!("redact-render-suppressions-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::env::set_var("HERDR_PLUGIN_STATE_DIR", &dir);
+
+    let mut store = Store::load(&Config::default());
+    let pane = PaneRef {
+        pane_id: "w0:p1".to_string(),
+        workspace_id: "w0".to_string(),
+        tab_id: "w0:t1".to_string(),
+        workspace_label: "app".to_string(),
+        agent: Some("claude".to_string()),
+        title: None,
+        cwd: None,
+    };
+    for digest in 1..=12 {
+        let candidate = Match {
+            pattern: "fixture_rule".to_string(),
+            label: "Fixture".to_string(),
+            confidence: Confidence::Strong,
+            preview: "ABCD…WXYZ".to_string(),
+            value_len: 20,
+            line: digest as usize,
+            digest,
+        };
+        let fresh = store.observe(&pane, &[candidate], NOW);
+        assert_eq!(store.suppress(&fresh[0].id), 1);
+    }
+    store.prune_to(&[]);
+    let report = store.report(Vec::new());
+    assert!(report.findings.is_empty());
+
+    let text = flatten(&report_text(&report, 80));
+    assert!(
+        text.contains("12 permanent value suppression(s) active"),
+        "{text}"
+    );
+
+    let json: serde_json::Value = serde_json::from_str(&report_json(&report)).expect("report JSON");
+    assert_eq!(json["counts"]["findings"], 0);
+    assert_eq!(json["counts"]["suppressions"], 12);
+    assert_eq!(
+        json["counts"]["notes"], 0,
+        "the suppression count is visibility, not a scan failure"
+    );
+
+    drop(store);
+    std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
