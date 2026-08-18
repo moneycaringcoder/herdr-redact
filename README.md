@@ -295,6 +295,7 @@ Scanning:
   --json              Print the same findings as JSON and exit
   --watch             Live findings pane (a acknowledges, A acknowledges all)
   --rules             List the active detection rules and exit
+  --explain <RULE>    Explain one active detection rule and exit
 
 Findings:
   --ack <ID>          Acknowledge one finding by id or id prefix
@@ -348,12 +349,13 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once` and `--json` never backfill, because they are interactive commands whose latency you are waiting on. |
 | `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
-| `entropy` | `false` | Reserved for a Shannon-entropy heuristic, which is **not implemented**; see [detection rules](#detection-rules). Setting it is not an error and changes nothing. |
 | `notify` | `true` | Post a herdr toast for a new finding. Rate limited to one per rule per pane per watcher run regardless. |
 | `patterns` | `[]` | Your own rules. Each is `{ name, regex, label?, strong? }`; `strong` defaults to `true`. |
 | `allowlist` | `[]` | Regexes that suppress a finding. A finding is dropped when one matches either the value or the line it was found on. |
 | `ignore_panes` | `[]` | Pane ids never read at all. The escape hatch for a pane that is deliberately full of test credentials. |
 | `max_findings` | `500` | Cap on stored findings, so one pathological pane cannot grow the state file without bound. Oldest acknowledged findings are dropped first. |
+
+A config file that still sets `entropy` is ignored, exactly as any unknown key is.
 
 A worked example — an internal token format, and two things this repository prints constantly that are
 not worth being told about:
@@ -462,10 +464,8 @@ Precision is the product, so several obvious candidates are left out on purpose:
 - **Generic "high-entropy" strings.** A 32- or 40-character hex or base64 run with no surrounding
   context is a commit id, a checksum, a UUID, an image blob, or a minified bundle far more often than
   it is a key.
-- **The entropy heuristic.** The `entropy` config key exists and is **off by default**, and it is
-  currently **not implemented**: setting it changes nothing and the scanner records a note saying so.
-  Shannon entropy over terminal output is the false-positive machine this plugin exists to avoid
-  being, and there is no version of it that survives a page of base64.
+- **The entropy heuristic.** Shannon entropy over terminal output is the false-positive machine this
+  plugin exists to avoid being, and there is no version of it that survives a page of base64.
 
 The `.env`-style assignment rule is the one broad heuristic that does ship, which is why it reports at
 weak confidence and gets its own badge colour. It is anchored to the start of a line, insists the name
