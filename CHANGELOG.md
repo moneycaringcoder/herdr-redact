@@ -28,6 +28,15 @@ at least one minor cycle.
   scheduled and manual only, it is not a required check, and a red canary is a
   signal to read herdr's recent changes rather than a reason to hold a pull
   request.
+- `redact --explain <rule>`, which prints why a detection rule is shaped the way
+  it is: what it matches structurally, at what confidence, and what near-misses
+  it deliberately refuses. That reasoning was only in the README, and it is most
+  useful at the moment a rule fires or fails to. An unknown name lists the rules
+  whose names are close and exits non-zero; a name from your own `patterns` says
+  so rather than pretending to a built-in explanation. The explanations live
+  beside the rules in `src/scan.rs`, and a test asserts the README's rule table
+  and the compiled rule set still name the same rules at the same confidences,
+  so the table cannot drift from the code.
 
 ### Changed
 
