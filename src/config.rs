@@ -69,6 +69,9 @@ pub struct Config {
     /// The `.env`-style assignment heuristic (`FOO_TOKEN=…`). On, but it reports
     /// at `Confidence::Weak` and gets its own badge token.
     pub env_assignments: bool,
+    /// Compiled-in rule packs to enable in addition to the always-on default
+    /// pack. Unknown names are ignored with a note from the compiled rule set.
+    pub rule_packs: Vec<String>,
     /// Post a herdr toast for a new finding. Rate limited to one per pattern per
     /// pane per daemon run regardless of this setting.
     pub notify: bool,
@@ -92,6 +95,7 @@ impl Default for Config {
             backfill_lines: DEFAULT_BACKFILL_LINES,
             scan_all_panes: false,
             env_assignments: true,
+            rule_packs: vec!["default".to_string()],
             notify: true,
             patterns: Vec::new(),
             allowlist: Vec::new(),
@@ -192,6 +196,7 @@ struct FileConfig {
     backfill_lines: Option<u32>,
     scan_all_panes: Option<bool>,
     env_assignments: Option<bool>,
+    rule_packs: Option<Vec<String>>,
     notify: Option<bool>,
     patterns: Option<Vec<CustomPattern>>,
     allowlist: Option<Vec<String>>,
@@ -240,6 +245,9 @@ fn load_file() -> Config {
     }
     if let Some(env) = file.env_assignments {
         config.env_assignments = env;
+    }
+    if let Some(rule_packs) = file.rule_packs {
+        config.rule_packs = rule_packs;
     }
     if let Some(notify) = file.notify {
         config.notify = notify;
