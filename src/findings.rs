@@ -168,6 +168,10 @@ impl Store {
                 pane_id: pane.pane_id.clone(),
                 workspace_id: pane.workspace_id.clone(),
                 pane_label: pane.label().to_string(),
+                agent: pane.agent.clone(),
+                cwd: pane.cwd.clone(),
+                foreground_process_name_when_first_seen: None,
+                foreground_process_pid_when_first_seen: None,
                 line: candidate.line,
                 digest: candidate.digest,
                 first_seen: now,
@@ -180,6 +184,25 @@ impl Store {
         self.pending.extend(fresh.iter().cloned());
         self.enforce_cap();
         fresh
+    }
+
+    /// Adds the foreground process observed immediately after these findings
+    /// were first seen. Both the store and notification queue own copies.
+    pub fn record_foreground_process_when_first_seen(
+        &mut self,
+        fresh: &[Finding],
+        name: Option<&str>,
+        pid: Option<u32>,
+    ) {
+        if name.is_none() && pid.is_none() {
+            return;
+        }
+        for finding in self.findings.iter_mut().chain(self.pending.iter_mut()) {
+            if fresh.iter().any(|candidate| candidate.id == finding.id) {
+                finding.foreground_process_name_when_first_seen = name.map(str::to_string);
+                finding.foreground_process_pid_when_first_seen = pid;
+            }
+        }
     }
 
     /// Drops findings whose pane is no longer in the session.
@@ -550,6 +573,14 @@ struct StoredFinding {
     #[serde(default)]
     pane_label: String,
     #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+    #[serde(default)]
+    foreground_process_name_when_first_seen: Option<String>,
+    #[serde(default)]
+    foreground_process_pid_when_first_seen: Option<u32>,
+    #[serde(default)]
     line: usize,
     digest: u64,
     #[serde(default)]
@@ -572,6 +603,12 @@ impl From<&Finding> for StoredFinding {
             pane_id: finding.pane_id.clone(),
             workspace_id: finding.workspace_id.clone(),
             pane_label: finding.pane_label.clone(),
+            agent: finding.agent.clone(),
+            cwd: finding.cwd.clone(),
+            foreground_process_name_when_first_seen: finding
+                .foreground_process_name_when_first_seen
+                .clone(),
+            foreground_process_pid_when_first_seen: finding.foreground_process_pid_when_first_seen,
             line: finding.line,
             digest: finding.digest,
             first_seen: finding.first_seen,
@@ -599,6 +636,10 @@ impl StoredFinding {
             pane_id: self.pane_id,
             workspace_id: self.workspace_id,
             pane_label: self.pane_label,
+            agent: self.agent,
+            cwd: self.cwd,
+            foreground_process_name_when_first_seen: self.foreground_process_name_when_first_seen,
+            foreground_process_pid_when_first_seen: self.foreground_process_pid_when_first_seen,
             line: self.line,
             digest: self.digest,
             first_seen: self.first_seen,

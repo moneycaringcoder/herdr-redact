@@ -187,6 +187,14 @@ pub struct Finding {
     pub workspace_id: String,
     /// Pane label at the time of the sighting, for display.
     pub pane_label: String,
+    /// Agent name herdr reported when this finding was first seen.
+    pub agent: Option<String>,
+    /// Working directory herdr reported when this finding was first seen.
+    pub cwd: Option<PathBuf>,
+    /// Foreground process name when this finding was first seen.
+    pub foreground_process_name_when_first_seen: Option<String>,
+    /// Foreground process id when this finding was first seen.
+    pub foreground_process_pid_when_first_seen: Option<u32>,
     pub line: usize,
     pub digest: u64,
     /// Unix seconds. A finding stays until acknowledged, so `first_seen` is what

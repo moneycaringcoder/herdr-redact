@@ -37,11 +37,15 @@ const VECTORS: &[&str] = &[
     "hunter2correcthorsebattery",
 ];
 
+const TERMINAL_TITLE_VECTOR: &str = "ghp_TITLETITLETITLETITLETITLETITLETITLE1";
+const SHELL_PROMPT_VECTOR: &str = "ghp_PROMPTPROMPTPROMPTPROMPTPROMPTPROMPT";
+
 /// The pane text the vectors are found in, and the assignments that carry the
 /// ones with no prefix of their own.
 fn pane_text() -> String {
     format!(
-        "$ cat .env\n\
+        "$ printf '%s' {}\n\
+         $ cat .env\n\
          AWS_ACCESS_KEY_ID={}\n\
          GITHUB_TOKEN={}\n\
          ANTHROPIC_API_KEY={}\n\
@@ -51,7 +55,14 @@ fn pane_text() -> String {
          DATABASE_PASSWORD={}\n\
          $ cargo build --release\n\
              Finished `release` profile [optimized] target(s) in 9.42s\n",
-        VECTORS[0], VECTORS[1], VECTORS[2], VECTORS[3], VECTORS[4], VECTORS[5], VECTORS[6],
+        SHELL_PROMPT_VECTOR,
+        VECTORS[0],
+        VECTORS[1],
+        VECTORS[2],
+        VECTORS[3],
+        VECTORS[4],
+        VECTORS[5],
+        VECTORS[6],
     )
 }
 
@@ -80,7 +91,7 @@ fn pane() -> PaneRef {
         tab_id: "w9:t1".into(),
         workspace_label: "app".into(),
         agent: Some("claude".into()),
-        title: Some("a task title".into()),
+        title: Some(TERMINAL_TITLE_VECTOR.into()),
         cwd: Some("/home/dev/repos/app".into()),
     }
 }
@@ -90,6 +101,8 @@ fn pane() -> PaneRef {
 /// run than that is a leak even if the whole value is absent.
 fn forbidden() -> Vec<String> {
     let mut out: Vec<String> = VECTORS.iter().map(|v| v.to_string()).collect();
+    out.push(TERMINAL_TITLE_VECTOR.to_string());
+    out.push(SHELL_PROMPT_VECTOR.to_string());
     for value in VECTORS {
         let chars: Vec<char> = value.chars().collect();
         // Five characters from the head and from the tail: one more than the
@@ -180,7 +193,8 @@ fn the_persisted_state_file_contains_no_value() {
         !matches.is_empty(),
         "nothing detected, so nothing is proved"
     );
-    store.observe(&pane(), &matches, now());
+    let fresh = store.observe(&pane(), &matches, now());
+    store.record_foreground_process_when_first_seen(&fresh, Some("curl"), Some(4310));
     store.save().expect("save");
 
     // Every file the store wrote, not just the one we expect it to have.
@@ -210,7 +224,8 @@ fn report_from_vectors(dir: &std::path::Path) -> Report {
     let mut store = Store::load(&config);
     let matches = scan::scan(&pane_text(), &rules, store.key());
     assert!(!matches.is_empty(), "nothing detected");
-    store.observe(&pane(), &matches, now());
+    let fresh = store.observe(&pane(), &matches, now());
+    store.record_foreground_process_when_first_seen(&fresh, Some("curl"), Some(4310));
     store.report(vec!["a note about something going wrong".into()])
 }
 
@@ -331,6 +346,10 @@ fn a_finding_has_no_field_that_could_hold_a_value() {
             pane_id,
             workspace_id,
             pane_label,
+            agent,
+            cwd,
+            foreground_process_name_when_first_seen,
+            foreground_process_pid_when_first_seen: _,
             line: _,
             digest: _,
             first_seen: _,
@@ -345,9 +364,23 @@ fn a_finding_has_no_field_that_could_hold_a_value() {
             ("pane_id", pane_id),
             ("workspace_id", workspace_id),
             ("pane_label", pane_label),
+            ("agent", agent.as_ref().expect("agent provenance")),
+            (
+                "foreground process when first seen",
+                foreground_process_name_when_first_seen
+                    .as_ref()
+                    .expect("process provenance"),
+            ),
         ] {
             assert_clean(what, text);
         }
+        assert_clean(
+            "cwd",
+            &cwd.as_ref()
+                .expect("working-directory provenance")
+                .display()
+                .to_string(),
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);

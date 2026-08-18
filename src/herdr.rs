@@ -4,10 +4,11 @@
 //! answers exactly one request per connection and then closes, so every call
 //! must be able to reconnect and retry once — see docs/herdr-protocol.md.
 //!
-//! Two response shapes in this file nest their payload one level below `result`
-//! (`snapshot` and `read`). Both are read explicitly and both treat an absent
-//! object as a hard error, because in each case the quiet fallback — no panes,
-//! no text — is indistinguishable from a legitimately idle session.
+//! Three response shapes in this file nest their payload one level below
+//! `result` (`snapshot`, `read`, and `process_info`). They are read explicitly
+//! and treat an absent object as a hard error, because the quiet fallback — no
+//! panes, no text, or no process context — is indistinguishable from a
+//! legitimately idle session.
 
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
@@ -53,6 +54,14 @@ impl fmt::Display for HerdrError {
 }
 
 impl std::error::Error for HerdrError {}
+
+/// Current process context for one pane, reduced before it leaves the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneProcessInfo {
+    pub pane_id: String,
+    pub foreground_process_name: Option<String>,
+    pub foreground_process_pid: Option<u32>,
+}
 
 /// Error code from a herdr error envelope, or `None` for a transport failure.
 pub fn error_code<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a str> {
@@ -141,6 +150,38 @@ impl Herdr {
                 .get("truncated")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+        })
+    }
+
+    /// One `pane.process_info` call, reduced to safe process context.
+    pub fn process_info(&mut self, pane_id: &str) -> Result<PaneProcessInfo> {
+        let result = self.call("pane.process_info", json!({ "pane_id": pane_id }))?;
+        // Same nesting trap as `session.snapshot` and `pane.read`: silently
+        // accepting an absent payload makes a protocol break look like normal
+        // missing context.
+        let process_info = result
+            .get("process_info")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| {
+                format!(
+                    "pane.process_info on {pane_id} returned no `process_info` object (result type `{}`)",
+                    text(&result, "type").unwrap_or("missing")
+                )
+            })?;
+        let foreground_process = process_info
+            .get("foreground_processes")
+            .and_then(Value::as_array)
+            .and_then(|processes| processes.first());
+        // `argv` and `cmdline` are deliberately not read: either may contain the credential itself.
+        Ok(PaneProcessInfo {
+            pane_id: text(process_info, "pane_id").unwrap_or(pane_id).to_string(),
+            foreground_process_name: foreground_process
+                .and_then(|process| text(process, "name"))
+                .map(str::to_string),
+            foreground_process_pid: foreground_process
+                .and_then(|process| process.get("pid"))
+                .and_then(Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok()),
         })
     }
 

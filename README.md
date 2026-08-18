@@ -30,9 +30,12 @@ Everything else about it is built to make that safe:
   action you invoke is you asking it to look.
 - **No secret is ever written anywhere.** Not to a log, not to the state file, not into a toast, not
   into the JSON output, not into a badge. A finding records the rule that fired, the pane it fired
-  in, the length of the value, a keyed fingerprint used only to recognise the same finding again —
-  and a **masked preview** showing at most the first four and the last four characters, and never
-  more than a third of the value. A short value renders as a bare `…` and nothing else.
+  in, the agent and working directory, and the foreground process name and pid herdr reported when
+  the finding was first seen. It also records the length of the value, a keyed fingerprint used only
+  to recognise the same finding again, and a **masked preview** showing at most the first four and the
+  last four characters, and never more than a third of the value. A short value renders as a bare `…`
+  and nothing else. The command line and terminal title are deliberately **not** recorded: both can
+  contain the credential itself, as in a `curl -H "Authorization: Bearer …"` command.
 - **The value exists in one function and then stops existing.** The scanner is a pure function over a
   string; the type it returns has no field a raw value could travel in, so "did we leak it?" is a
   question about one module rather than about the whole program. The test suite holds that line from
@@ -67,6 +70,10 @@ that is running an agent, and scans it. What comes out of the scanner is already
 
 A finding stays until you acknowledge it. A secret that has scrolled out of view is still in that
 pane's scrollback and still exposed, so "it went away on its own" is not a state this plugin has.
+
+The process name and pid are a snapshot of the foreground process when the finding was first seen,
+not a claim that the process printed the line. Process context is requested only after a pane produces
+a new finding; a failed or empty context lookup does not affect the finding or its badge.
 
 Each cycle has a reading budget, because reading is one round trip per pane and a loaded server can
 take over a second for one of them. When the budget runs out the cycle stops, says how many panes it
@@ -141,9 +148,9 @@ An acknowledged finding stays in the table, marked `✓` and sorted below the li
 value is still sitting in that pane's scrollback.
 
 `a` acknowledges the selected finding, `A` acknowledges every one of them, `j`/`k` or the arrow keys
-move the selection, and `q` quits. The view reflows down to very narrow panes, and where a pane is
-too narrow for a table each finding is stacked over two lines instead of being squeezed into a column
-of ellipses.
+move the selection, and `q` quits. The view reflows down to very narrow panes. Where a pane is too
+narrow for a table, each finding is stacked and the agent, working directory, and foreground process
+when first seen appear on following lines when herdr supplied them.
 
 **A scan that found nothing and a scan that could not look do not render the same.** Six panes scanned
 and clean says so in words; a cycle that hit a problem says the scan did not complete cleanly and
@@ -354,6 +361,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once` and `--json` never backfill, because they are interactive commands whose latency you are waiting on. |
 | `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
+| `rule_packs` | `["default"]` | Compiled-in rule packs to add. The `default` pack is always active; `[]` therefore means default only, never no scanning. Unknown names produce a note and are ignored. |
 | `notify` | `true` | Post a herdr toast for a new finding. Rate limited to one per rule per pane per watcher run regardless. |
 | `patterns` | `[]` | Your own rules. Each is `{ name, regex, label?, strong? }`; `strong` defaults to `true`. |
 | `allowlist` | `[]` | Regexes that suppress a finding. A finding is dropped when one matches either the value or the line it was found on. |
@@ -507,6 +515,14 @@ when the history you want to measure is older than the configured limit.
 
 Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Strong findings light
 `redact_secret`; weak ones light `redact_weak`.
+
+Every built-in rule belongs to a named, versioned pack. The `default` pack at version 1 is the exact
+rule set that shipped before packs: configuring another pack only adds rules and never removes a
+default rule. Rule names are stable public interface and never change between packs. The compiled-in
+`narrow` pack at version 1 is intentionally empty today; it is the seam for future precise formats
+whose relevance is too specialized for every user, without demoting any protection already in the
+default set. `redact --rules` appends each rule's pack and version after the existing name and
+confidence columns; custom patterns have no compiled-in pack or version and show `-` for both.
 
 | Rule | Catches | Confidence |
 | --- | --- | --- |

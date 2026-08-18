@@ -29,6 +29,9 @@ const SOURCE: &str = "test.redact";
 const SNAPSHOT_FIXTURE: &str = include_str!("fixtures/session_snapshot.json");
 /// Captured from a live pane, body replaced with synthetic build output.
 const READ_FIXTURE: &str = include_str!("fixtures/pane_read.json");
+/// Captured from a live pane running `curl`; the full response envelope is kept.
+const PROCESS_FIXTURE: &str = include_str!("fixtures/pane_process_info.json");
+const PROCESS_CREDENTIAL: &str = "ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE01";
 
 /// `HERDR_SOCKET_PATH` and `HERDR_PLUGIN_ID` are process-global, so the tests
 /// that set them have to run one at a time even though cargo runs them on
@@ -294,6 +297,44 @@ fn a_reply_without_the_read_object_is_an_error_not_an_empty_pane() {
 
     assert!(
         err.to_string().contains("read"),
+        "the message must name what is missing: {err}"
+    );
+}
+
+#[test]
+fn pane_process_info_is_reduced_to_the_first_process_name_and_pid() {
+    let _guard = env_lock();
+    let server = TestServer::start(vec![Reply::Line(PROCESS_FIXTURE.trim().to_string())]);
+    let mut client = server.client();
+
+    let process = client.process_info("w16:p5").expect("process info");
+
+    assert_eq!(process.pane_id, "w16:p5");
+    assert_eq!(process.foreground_process_name.as_deref(), Some("curl"));
+    assert_eq!(process.foreground_process_pid, Some(4310));
+    assert!(
+        !format!("{process:?}").contains(PROCESS_CREDENTIAL),
+        "the reduced value must not retain command-line credentials: {process:?}"
+    );
+    let request = server.only_request();
+    assert_eq!(request["method"], "pane.process_info");
+    assert_eq!(request["params"], json!({"pane_id": "w16:p5"}));
+}
+
+#[test]
+fn a_reply_without_the_process_info_object_is_a_hard_error() {
+    let _guard = env_lock();
+    let server = TestServer::start(vec![reply_with(json!({
+        "type": "pane_process_info"
+    }))]);
+    let mut client = server.client();
+
+    let err = client
+        .process_info("w16:p5")
+        .expect_err("a missing `process_info` object must not read as empty context");
+
+    assert!(
+        err.to_string().contains("process_info"),
         "the message must name what is missing: {err}"
     );
 }
