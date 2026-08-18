@@ -347,6 +347,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | `lines` | `400` | Lines of output read per pane per cycle. Clamped to 1–20000. Bigger means more history and more to scan. `--lines <N>` overrides it for one run. |
 | `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
+| `rule_packs` | `["default"]` | Compiled-in rule packs to add. The `default` pack is always active; `[]` therefore means default only, never no scanning. Unknown names produce a note and are ignored. |
 | `entropy` | `false` | Reserved for a Shannon-entropy heuristic, which is **not implemented**; see [detection rules](#detection-rules). Setting it is not an error and changes nothing. |
 | `notify` | `true` | Post a herdr toast for a new finding. Rate limited to one per rule per pane per watcher run regardless. |
 | `patterns` | `[]` | Your own rules. Each is `{ name, regex, label?, strong? }`; `strong` defaults to `true`. |
@@ -418,6 +419,14 @@ the same; there is simply more text for them to be precise about. If a particula
 
 Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Strong findings light
 `redact_secret`; weak ones light `redact_weak`.
+
+Every built-in rule belongs to a named, versioned pack. The `default` pack at version 1 is the exact
+rule set that shipped before packs: configuring another pack only adds rules and never removes a
+default rule. Rule names are stable public interface and never change between packs. The compiled-in
+`narrow` pack at version 1 is intentionally empty today; it is the seam for future precise formats
+whose relevance is too specialized for every user, without demoting any protection already in the
+default set. `redact --rules` appends each rule's pack and version after the existing name and
+confidence columns; custom patterns have no compiled-in pack or version and show `-` for both.
 
 | Rule | Catches | Confidence |
 | --- | --- | --- |

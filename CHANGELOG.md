@@ -40,6 +40,17 @@ at least one minor cycle.
   reports under `jwt`, and a Postgres or MySQL URL carrying a password reports
   under `url_credentials` at weak confidence. A second rule for either would
   double-report one credential and give the allowlist two names to silence.
+- Named, versioned rule packs. Every rule now belongs to a pack, `rule_packs`
+  selects which are active, and `--rules` prints the pack and version beside
+  each rule so you can see the detection surface you are actually running.
+  Packs are compiled in — nothing is fetched, and no rule is ever renamed by
+  one. Every shipped rule stays in `default`, unchanged in name, confidence and
+  order, and a golden test now pins that list so it cannot drift. The second
+  pack, `narrow`, ships empty on purpose: demoting a rule that people are
+  already protected by would weaken them silently, so it stands as the seam for
+  precise formats too specialised for everyone. Packs only ever add rules, an
+  unknown pack name is a note rather than a dead scanner, and an empty
+  `rule_packs` list means the default set rather than nothing at all.
 
 ### Changed
 

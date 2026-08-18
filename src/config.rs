@@ -64,6 +64,9 @@ pub struct Config {
     /// The `.env`-style assignment heuristic (`FOO_TOKEN=…`). On, but it reports
     /// at `Confidence::Weak` and gets its own badge token.
     pub env_assignments: bool,
+    /// Compiled-in rule packs to enable in addition to the always-on default
+    /// pack. Unknown names are ignored with a note from the compiled rule set.
+    pub rule_packs: Vec<String>,
     /// The entropy heuristic. **Off by default and staying that way** — it is
     /// the false-positive machine this plugin exists to avoid being.
     pub entropy: bool,
@@ -89,6 +92,7 @@ impl Default for Config {
             lines: DEFAULT_LINES,
             scan_all_panes: false,
             env_assignments: true,
+            rule_packs: vec!["default".to_string()],
             entropy: false,
             notify: true,
             patterns: Vec::new(),
@@ -184,6 +188,7 @@ struct FileConfig {
     lines: Option<u32>,
     scan_all_panes: Option<bool>,
     env_assignments: Option<bool>,
+    rule_packs: Option<Vec<String>>,
     entropy: Option<bool>,
     notify: Option<bool>,
     patterns: Option<Vec<CustomPattern>>,
@@ -230,6 +235,9 @@ fn load_file() -> Config {
     }
     if let Some(env) = file.env_assignments {
         config.env_assignments = env;
+    }
+    if let Some(rule_packs) = file.rule_packs {
+        config.rule_packs = rule_packs;
     }
     if let Some(entropy) = file.entropy {
         config.entropy = entropy;
