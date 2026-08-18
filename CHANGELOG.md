@@ -28,6 +28,25 @@ at least one minor cycle.
   scheduled and manual only, it is not a required check, and a red canary is a
   signal to read herdr's recent changes rather than a reason to hold a pull
   request.
+- Per-workspace and per-repository configuration, through an `overlays` list.
+  An overlay matches on the workspace id, the workspace label, or a prefix of
+  the pane's working directory, and carries the same keys the top level does, so
+  the noisy repository can silence one pattern without weakening the scan
+  everywhere else. Scalars take the first matching overlay that names them and
+  lists append from every match, because an overlay that quietly replaced your
+  allowlist would be a silent hole. An empty path prefix is rejected as
+  malformed rather than honoured as a catch-all: it would match every pane while
+  the user believed their overlay was scoped. `redact --rules <pane-or-path>`
+  prints the rules actually in force for that context, since an overlay system
+  whose result cannot be printed is one nobody can debug.
+- `redact --calibrate`, which runs the active rule set over your own pane output
+  and reports what it *would* have fired on, badging nothing and acknowledging
+  nothing. Precision is what this plugin sells, and precision is measurable;
+  measuring it against your own terminal before trusting it is a better argument
+  than anything in this README. It writes nothing at all — not a finding, not the
+  digest key, not even the state directory, because it never constructs the store
+  in the first place. `--all-panes` is worth pairing with it: the noisiest surface
+  is the one worth measuring.
 - `redact --explain <rule>`, which prints why a detection rule is shaped the way
   it is: what it matches structurally, at what confidence, and what near-misses
   it deliberately refuses. That reasoning was only in the README, and it is most

@@ -272,6 +272,7 @@ you leave one out, findings at that level simply show nothing.
 | **Redact: set up sidebar (start here)** | Adds the tokens above to `config.toml`, backs it up, reloads herdr |
 | **Redact: undo sidebar setup** | Restores the backup that setup took |
 | **Redact: scan now** | One-shot scan of every agent pane |
+| **Redact: calibrate** | Shows what the active rules would have fired on, without storing findings or setting badges |
 | **Redact: JSON snapshot** | The same findings, machine-readable, for scripting |
 | **Redact: list detection rules** | The rules that are actually active, built-in and yours |
 | **Redact: acknowledge all findings** | Clears every current warning |
@@ -292,6 +293,7 @@ Usage: redact [VERB]
 
 Scanning:
   --once              Scan every agent pane once, print the findings, exit
+  --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
   --watch             Live findings pane (a acknowledges, A acknowledges all)
   --rules [PANE|PATH] List active rules for the base, pane, or working directory
@@ -481,6 +483,24 @@ chances for something credential-shaped to appear in output that was never a sec
 being catted, a test log, somebody's `--help`. The rules are the same either way, so the precision is
 the same; there is simply more text for them to be precise about. If a particular pane is noisy,
 `ignore_panes` is cheaper than turning the whole thing off.
+
+## Calibrating against your own output
+
+Precision is easiest to trust when you can measure it against the terminal output you actually see.
+`redact --calibrate` runs the active rules over one snapshot using the normal pane filter, line limit
+and cycle budget, then groups what **would** have fired by rule. Samples are masked before they leave
+the scanner. Calibration does not create the state directory, store findings, set badges or show
+notifications.
+
+For a representative precision check, include ordinary shell panes as well as agent panes:
+
+```sh
+redact --all-panes --calibrate
+```
+
+Read an incomplete result literally. A pane that could not be read, a pane truncated by the line
+limit, or a cycle budget that ran out is reported as incomplete rather than as clean. Raise `lines`
+when the history you want to measure is older than the configured limit.
 
 ## Detection rules
 

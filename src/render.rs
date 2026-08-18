@@ -28,6 +28,7 @@
 //! complete cleanly. An empty table on its own always means "we looked, and
 //! there was nothing there".
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -37,7 +38,7 @@ use serde_json::json;
 
 use crate::config::Config;
 use crate::findings::Store;
-use crate::model::{Alert, Finding, Report};
+use crate::model::{Alert, Calibration, Confidence, Finding, Report};
 use crate::{daemon, Result};
 
 /// A badge sits beside a branch or an agent name. Six display columns is the
@@ -69,6 +70,7 @@ const SELECTED_MARK: &str = "\u{25b8}";
 const ELLIPSIS: char = '\u{2026}';
 
 const TITLE: &str = "redact \u{b7} findings";
+const CALIBRATION_TITLE: &str = "redact \u{b7} calibration";
 
 /// The short id column: [`Finding::short_id`] is six characters.
 const ID_COLUMNS: usize = 6;
@@ -138,6 +140,248 @@ pub fn abbreviate(n: u64) -> String {
 /// but it still never overflows.
 pub fn report_text(report: &Report, columns: usize) -> String {
     render(report, columns, None)
+}
+
+/// Read-only calibration results at an explicit terminal width.
+///
+/// Rows aggregate by stable rule name and expose only the preview the scanner
+/// already masked. The digest is identity material and is never rendered.
+pub fn calibration_text(calibration: &Calibration, columns: usize) -> String {
+    let width = columns.max(MIN_COLUMNS);
+    let mut out = String::new();
+    push_line(&mut out, CALIBRATION_TITLE, width);
+    out.push('\n');
+
+    for line in calibration_summary_lines(calibration) {
+        push_wrapped(&mut out, "", "  ", &line, width);
+    }
+
+    if !calibration.hits.is_empty() {
+        out.push('\n');
+        push_calibration_table(&mut out, calibration, width);
+    }
+    out.push_str(&notes_section(&calibration.notes, width));
+    out
+}
+
+fn calibration_summary_lines(calibration: &Calibration) -> Vec<String> {
+    let mut lines = Vec::new();
+    let total = calibration.hits.len();
+    let incomplete = calibration.panes_unread > 0
+        || calibration.panes_truncated > 0
+        || !calibration.notes.is_empty();
+
+    if total > 0 {
+        lines.push(format!(
+            "{} would have fired across {} scanned.",
+            matches(total),
+            panes(calibration.panes_scanned)
+        ));
+    } else if calibration.panes_scanned > 0 && !incomplete {
+        lines.push(format!(
+            "0 matches would have fired across {} scanned.",
+            panes(calibration.panes_scanned)
+        ));
+    } else if calibration.panes_scanned > 0 {
+        lines.push(format!(
+            "0 matches were observed across {} scanned, but this calibration did not complete \
+             cleanly. This is not a clean result.",
+            panes(calibration.panes_scanned)
+        ));
+    } else if calibration.panes_unread > 0 {
+        lines.push(format!(
+            "0 matches were observed because calibration could not look: every one of the {} \
+             selected for reading was unread. This is not a clean result.",
+            panes(calibration.panes_unread)
+        ));
+    } else if calibration.panes_skipped > 0 {
+        lines.push(format!(
+            "0 matches were observed because calibration looked at no panes: {} skipped. Pass \
+             --all-panes to include ordinary terminal panes.",
+            panes(calibration.panes_skipped)
+        ));
+    } else {
+        lines.push(
+            "0 matches were observed because herdr reported no panes to calibrate.".to_string(),
+        );
+    }
+
+    if calibration.panes_skipped > 0 && calibration.panes_scanned > 0 {
+        lines.push(format!(
+            "{} skipped: not running an agent, named in `ignore_panes`, or this pane.",
+            panes(calibration.panes_skipped)
+        ));
+    }
+    if calibration.panes_unread > 0 && calibration.panes_scanned > 0 {
+        lines.push(format!(
+            "{} could not be read at all, so output there was not calibrated.",
+            panes(calibration.panes_unread)
+        ));
+    }
+    if calibration.panes_truncated > 0 {
+        lines.push(format!(
+            "{} had more output than the line budget, so this calibration did not examine all \
+             available output.",
+            panes(calibration.panes_truncated)
+        ));
+    }
+    if total > 0 && incomplete {
+        lines.push(
+            "This calibration did not complete cleanly, so the counts above are incomplete. The \
+             notes at the end say what went wrong."
+                .to_string(),
+        );
+    }
+    lines
+}
+
+fn matches(count: usize) -> String {
+    if count == 1 {
+        "1 match".to_string()
+    } else {
+        format!("{count} matches")
+    }
+}
+
+struct CalibrationAggregate {
+    confidence: Confidence,
+    count: usize,
+    panes: BTreeSet<String>,
+    sample: String,
+}
+
+struct CalibrationRow {
+    rule: String,
+    confidence: &'static str,
+    count: usize,
+    panes: usize,
+    sample: String,
+}
+
+const CALIBRATION_OVERHEAD: usize = 10;
+const CALIBRATION_MINIMUMS: [usize; 5] = [12, 10, 7, 5, 10];
+
+fn calibration_rows(calibration: &Calibration) -> Vec<CalibrationRow> {
+    let mut grouped: BTreeMap<String, CalibrationAggregate> = BTreeMap::new();
+    for hit in &calibration.hits {
+        let aggregate = grouped
+            .entry(hit.matched.pattern.clone())
+            .or_insert_with(|| CalibrationAggregate {
+                confidence: hit.matched.confidence,
+                count: 0,
+                panes: BTreeSet::new(),
+                sample: hit.matched.preview.clone(),
+            });
+        aggregate.count += 1;
+        aggregate.panes.insert(hit.pane_id.clone());
+    }
+
+    let mut rows: Vec<CalibrationRow> = grouped
+        .into_iter()
+        .map(|(rule, aggregate)| CalibrationRow {
+            rule,
+            confidence: aggregate.confidence.as_str(),
+            count: aggregate.count,
+            panes: aggregate.panes.len(),
+            sample: aggregate.sample,
+        })
+        .collect();
+    rows.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.rule.cmp(&right.rule))
+    });
+    rows
+}
+
+fn push_calibration_table(out: &mut String, calibration: &Calibration, width: usize) {
+    let rows = calibration_rows(calibration);
+    if CALIBRATION_OVERHEAD + CALIBRATION_MINIMUMS.iter().sum::<usize>() > width {
+        for row in rows {
+            push_wrapped(
+                out,
+                "  ",
+                "    ",
+                &format!(
+                    "{} \u{b7} {} \u{b7} {} in {}",
+                    row.rule,
+                    row.confidence,
+                    matches(row.count),
+                    panes(row.panes)
+                ),
+                width,
+            );
+            let sample_prefix = "    masked sample: ";
+            let sample = truncate_right(
+                &row.sample,
+                width.saturating_sub(display_width(sample_prefix)),
+            );
+            push_line(out, &format!("{sample_prefix}{sample}"), width);
+        }
+        return;
+    }
+
+    let mut widths = [
+        calibration_natural(&rows, "rule", |row| &row.rule),
+        calibration_natural(&rows, "confidence", |row| row.confidence),
+        display_width("matches").max(rows.iter().map(|row| digits(row.count)).max().unwrap_or(0)),
+        display_width("panes").max(rows.iter().map(|row| digits(row.panes)).max().unwrap_or(0)),
+        calibration_natural(&rows, "masked sample", |row| &row.sample),
+    ];
+    shrink_widths(
+        &mut widths,
+        &CALIBRATION_MINIMUMS,
+        CALIBRATION_OVERHEAD,
+        width,
+    );
+
+    push_line(
+        out,
+        &format!(
+            "  {}  {}  {}  {}  {}",
+            pad("rule", widths[0]),
+            pad("confidence", widths[1]),
+            pad("matches", widths[2]),
+            pad("panes", widths[3]),
+            pad("masked sample", widths[4]),
+        ),
+        width,
+    );
+    for row in rows {
+        push_line(
+            out,
+            &format!(
+                "  {}  {}  {}  {}  {}",
+                pad(&row.rule, widths[0]),
+                pad(row.confidence, widths[1]),
+                pad(&row.count.to_string(), widths[2]),
+                pad(&row.panes.to_string(), widths[3]),
+                pad(&row.sample, widths[4]),
+            ),
+            width,
+        );
+    }
+}
+
+fn calibration_natural(
+    rows: &[CalibrationRow],
+    heading: &str,
+    pick: impl Fn(&CalibrationRow) -> &str,
+) -> usize {
+    rows.iter()
+        .map(|row| display_width(pick(row)))
+        .chain(std::iter::once(display_width(heading)))
+        .max()
+        .unwrap_or(0)
+}
+
+fn digits(value: usize) -> usize {
+    if value == 0 {
+        1
+    } else {
+        value.ilog10() as usize + 1
+    }
 }
 
 /// [`report_text`], plus the watch pane's selection caret.
@@ -434,13 +678,22 @@ fn natural(rows: &[Row], heading: &str, pick: impl Fn(&Row) -> &str) -> usize {
 /// still luxurious. Stops at the floors, which the caller has already checked
 /// will fit.
 fn shrink(widths: &mut [usize; 5], width: usize) {
+    shrink_widths(widths, &TABLE_MINIMUMS, TABLE_OVERHEAD, width);
+}
+
+fn shrink_widths<const N: usize>(
+    widths: &mut [usize; N],
+    minimums: &[usize; N],
+    overhead: usize,
+    width: usize,
+) {
     loop {
-        if TABLE_OVERHEAD + widths.iter().sum::<usize>() <= width {
+        if overhead + widths.iter().sum::<usize>() <= width {
             return;
         }
         let widest = (0..widths.len())
-            .filter(|&index| widths[index] > TABLE_MINIMUMS[index])
-            .max_by_key(|&index| widths[index] - TABLE_MINIMUMS[index]);
+            .filter(|&index| widths[index] > minimums[index])
+            .max_by_key(|&index| widths[index] - minimums[index]);
         match widest {
             Some(index) => widths[index] -= 1,
             None => return,
@@ -657,6 +910,13 @@ fn push_wrapped(out: &mut String, first: &str, rest: &str, text: &str, width: us
 // ---------------------------------------------------------------------------
 // One-shot verbs
 // ---------------------------------------------------------------------------
+
+pub fn run_calibrate(config: &Config) -> Result<()> {
+    let calibration = daemon::calibrate(config)?;
+    let width = terminal_size().0;
+    print!("{}", calibration_text(&calibration, width));
+    Ok(())
+}
 
 pub fn run_once(config: &Config) -> Result<()> {
     let report = daemon::scan_once(config)?;
