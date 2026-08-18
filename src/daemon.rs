@@ -26,6 +26,109 @@ const STOP_POLL: Duration = Duration::from_millis(25);
 /// The main loop wakes at least this often so a stop request is noticed
 /// promptly even with a long scan interval.
 const LOOP_TICK: Duration = Duration::from_millis(250);
+/// Quiet is deliberately short-lived. The marker stores an absolute expiry,
+/// and readers reject anything farther away than this rather than trusting a
+/// corrupt or hand-edited file.
+pub const MAX_QUIET: Duration = Duration::from_secs(4 * 60 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuietStart {
+    pub until: u64,
+    pub clamped: bool,
+}
+
+/// Parse a quiet duration. A bare number is minutes; `m` and `h` suffixes are
+/// accepted. Values beyond four hours are clamped before they reach disk.
+pub fn parse_quiet_duration(value: &str) -> Result<(Duration, bool)> {
+    let value = value.trim();
+    let (digits, unit) = match value.as_bytes().last().copied() {
+        Some(b'm') => (&value[..value.len() - 1], 60u64),
+        Some(b'h') => (&value[..value.len() - 1], 60 * 60),
+        _ => (value, 60u64),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(
+            format!("invalid quiet duration `{value}`; use minutes, `10m`, or `1h`").into(),
+        );
+    }
+    let amount = digits.bytes().fold(0u64, |number, byte| {
+        number
+            .saturating_mul(10)
+            .saturating_add(u64::from(byte - b'0'))
+    });
+    if amount == 0 {
+        return Err("quiet duration must be greater than zero".into());
+    }
+    let requested = amount.saturating_mul(unit);
+    let seconds = requested.min(MAX_QUIET.as_secs());
+    Ok((Duration::from_secs(seconds), requested > seconds))
+}
+
+pub fn start_quiet(value: &str) -> Result<QuietStart> {
+    let (duration, clamped) = parse_quiet_duration(value)?;
+    let until = crate::model::now().saturating_add(duration.as_secs());
+    let path = config::quiet_file();
+    // Remove first so a failed replacement cannot leave an older, longer pause
+    // in force.
+    remove_quiet_marker(&path)?;
+    write_marker(&path, &until.to_string())?;
+    Ok(QuietStart { until, clamped })
+}
+
+pub fn end_quiet() -> Result<()> {
+    Ok(remove_quiet_marker(&config::quiet_file())?)
+}
+
+/// Active quiet expiry, if and only if the marker is readable, unambiguous,
+/// still in the future, and no farther away than the four-hour ceiling.
+pub fn quiet_until() -> Option<u64> {
+    quiet_until_at(crate::model::now())
+}
+
+pub fn quiet_until_at(now: u64) -> Option<u64> {
+    let path = config::quiet_file();
+    let expiry = match fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+    {
+        Some(expiry) => expiry,
+        None => {
+            let _ = fs::remove_file(path);
+            return None;
+        }
+    };
+    let remaining = expiry.saturating_sub(now);
+    if remaining == 0 || remaining > MAX_QUIET.as_secs() {
+        let _ = fs::remove_file(path);
+        return None;
+    }
+    Some(expiry)
+}
+
+pub fn quiet_remaining(until: u64, now: u64) -> String {
+    let seconds = until.saturating_sub(now);
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn remove_quiet_marker(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(remove_err) => {
+            // If unlinking is unavailable but writing is not, an expired marker
+            // still makes every reader loud.
+            fs::write(path, "0").map_err(|_| remove_err)
+        }
+    }
+}
 
 /// Valued arguments the detached child is given a copy of. It re-reads the
 /// config file but never sees the user's command line, so `redact --enable
@@ -117,6 +220,7 @@ pub fn run(args: &[String]) -> Result<()> {
     // Notes repeat every cycle for as long as their cause lasts, so only the
     // ones that are new since the last cycle are worth printing.
     let mut reported_notes: Vec<String> = Vec::new();
+    let mut was_quiet = false;
 
     loop {
         if stopping.load(Ordering::SeqCst) {
@@ -157,8 +261,17 @@ pub fn run(args: &[String]) -> Result<()> {
                     }
                     reported_notes.clone_from(&report.notes);
 
-                    notify_new(connected, &config, &mut store);
-                    push(connected, &config, &report, &panes, &active);
+                    let quiet = quiet_until().is_some();
+                    notify_new(connected, &config, &mut store, quiet);
+                    let plan = badge_plan_for_cycle(
+                        &lock(&active).clone(),
+                        &report,
+                        &panes,
+                        quiet,
+                        was_quiet,
+                    );
+                    apply_badge_plan(connected, &config, plan, &active);
+                    was_quiet = quiet;
 
                     if let Err(err) = store.save() {
                         eprintln!("redact: could not save findings: {err}");
@@ -536,11 +649,11 @@ pub fn new_notes(previous: &[String], current: &[String]) -> Vec<String> {
 /// Toasts findings seen for the first time, at most one per pattern per pane
 /// per daemon run.
 ///
-/// The queue is drained whether or not notifications are on, so turning them
-/// off does not build a backlog that fires the moment they are turned back on.
-fn notify_new(client: &mut Herdr, config: &Config, store: &mut Store) {
+/// The queue is drained whether notifications are disabled or quiet is active,
+/// so neither switch builds a backlog that fires when warnings become visible.
+fn notify_new(client: &mut Herdr, config: &Config, store: &mut Store, quiet: bool) {
     let fresh = store.take_new_findings();
-    if !config.notify {
+    if quiet || !config.notify {
         return;
     }
     for finding in fresh {
@@ -631,6 +744,55 @@ pub enum BadgeOp {
 ///   collapsed, and a badge nobody can see protects nobody.
 pub fn badge_plan(active: &ActiveBadges, report: &Report, panes: &[PaneRef]) -> Vec<BadgeOp> {
     badge_plan_with(active, report, panes, render::badge)
+}
+/// Badge work for a daemon cycle. Entering quiet performs one total sweep;
+/// later quiet cycles do no badge work. The first loud cycle returns to the
+/// ordinary report-driven plan and therefore re-lights current findings.
+pub fn badge_plan_for_cycle(
+    active: &ActiveBadges,
+    report: &Report,
+    panes: &[PaneRef],
+    quiet: bool,
+    was_quiet: bool,
+) -> Vec<BadgeOp> {
+    match (quiet, was_quiet) {
+        (true, false) => quiet_badge_plan(panes),
+        (true, true) => Vec::new(),
+        (false, _) => badge_plan(active, report, panes),
+    }
+}
+
+/// Clear every owned token from every current pane and workspace.
+pub fn quiet_badge_plan(panes: &[PaneRef]) -> Vec<BadgeOp> {
+    let mut pane_ids: Vec<&str> = panes.iter().map(|pane| pane.pane_id.as_str()).collect();
+    pane_ids.sort_unstable();
+    pane_ids.dedup();
+    let mut workspace_ids: Vec<&str> = panes
+        .iter()
+        .map(|pane| pane.workspace_id.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
+    workspace_ids.sort_unstable();
+    workspace_ids.dedup();
+
+    let mut ops = Vec::new();
+    for pane_id in pane_ids {
+        for token in Alert::ALL_TOKENS {
+            ops.push(BadgeOp::ClearPane {
+                pane_id: pane_id.to_string(),
+                token: token.to_string(),
+            });
+        }
+    }
+    for workspace_id in workspace_ids {
+        for token in Alert::ALL_TOKENS {
+            ops.push(BadgeOp::ClearWorkspace {
+                workspace_id: workspace_id.to_string(),
+                token: token.to_string(),
+            });
+        }
+    }
+    ops
 }
 
 /// [`badge_plan`] with the badge text supplied by the caller.
@@ -752,15 +914,13 @@ fn plan_target(
 /// Executes a badge plan. Errors are reported per call and the cycle continues:
 /// a swallowed push failure renders as a blank badge with nothing to debug, and
 /// one bad pane must not cost every other one its badge.
-fn push(
+fn apply_badge_plan(
     client: &mut Herdr,
     config: &Config,
-    report: &Report,
-    panes: &[PaneRef],
+    plan: Vec<BadgeOp>,
     active: &Mutex<ActiveBadges>,
 ) {
     let ttl_ms = config.ttl_ms();
-    let plan = badge_plan(&lock(active).clone(), report, panes);
     let mut lit = ActiveBadges::default();
 
     for op in plan {
