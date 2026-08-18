@@ -28,6 +28,18 @@ at least one minor cycle.
   scheduled and manual only, it is not a required check, and a red canary is a
   signal to read herdr's recent changes rather than a reason to hold a pull
   request.
+- Three detection rules, each with a positive vector and negative vectors for
+  the nearest innocent lookalike: `jdbc_url_password` (a password carried in a
+  JDBC connection string, anchored on the `jdbc:` scheme so it cannot decay into
+  a generic `password=` matcher), `docker_registry_auth` (the `"auth"` field of
+  a Docker registry credential, base64-decoded and required to contain exactly
+  one `:` with a plausible password half, so a pasted image layer stays quiet),
+  and `vault_token` (`hvs.`, `hvb.` and `hvr.`).
+- Corpus coverage proving two formats are already caught and deliberately get no
+  rule of their own: a Kubernetes projected service-account token is a JWT and
+  reports under `jwt`, and a Postgres or MySQL URL carrying a password reports
+  under `url_credentials` at weak confidence. A second rule for either would
+  double-report one credential and give the allowlist two names to silence.
 
 ### Changed
 

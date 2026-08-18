@@ -448,6 +448,38 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             r"\bAGE-SECRET-KEY-1[02-9A-HJ-NP-Z]{58}\b",
         )
         .standalone(),
+        // JDBC permits credentials in both URL query parameters and its
+        // semicolon-delimited property form. The `jdbc:` anchor is what makes a
+        // strong claim possible; a generic `password=` matcher would not be.
+        Rule::new(
+            "jdbc_url_password",
+            "JDBC URL password",
+            Confidence::Strong,
+            r#"(?i)\bjdbc:[^\s]*[?&;]password=([^\s&#;"']+)"#,
+        )
+        .groups(&[1])
+        .narrowed()
+        .check(is_secret_capture),
+        // Docker stores registry credentials as base64(username:password).
+        // Checking the decoded shape keeps unrelated base64 fields and image
+        // layers from becoming findings merely because they sit next to `auth`.
+        Rule::new(
+            "docker_registry_auth",
+            "Docker registry auth",
+            Confidence::Strong,
+            r#""auth"[ \t]*:[ \t]*"([A-Za-z0-9+/]{8,}={0,2})""#,
+        )
+        .groups(&[1])
+        .check(is_docker_registry_auth),
+        // Modern Vault service, batch and recovery tokens carry provider-owned
+        // prefixes. The legacy `s.` prefix is too short to support Strong.
+        Rule::new(
+            "vault_token",
+            "Vault token",
+            Confidence::Strong,
+            r"\b(?:hvs|hvb|hvr)\.[A-Za-z0-9_-]{24,}",
+        )
+        .standalone(),
         // Weak, not Strong: `postgres://user:pass@host/db` is what every README
         // and every connection-string example in the world looks like. The
         // password still has to survive the placeholder filter, which is what
@@ -541,6 +573,63 @@ fn is_jwt(caps: &Captures<'_>) -> bool {
 fn is_secret_capture(caps: &Captures<'_>) -> bool {
     caps.get(1)
         .is_some_and(|value| plausible_secret_value(value.as_str()))
+}
+
+/// Docker's `auth` value is standard base64 for `username:password`. Requiring
+/// exactly one separator and applying the ordinary placeholder filter to the
+/// password half distinguishes a credential from arbitrary encoded payloads.
+fn is_docker_registry_auth(caps: &Captures<'_>) -> bool {
+    let Some(value) = caps.get(1) else {
+        return false;
+    };
+    let Some(bytes) = base64_decode(value.as_str()) else {
+        return false;
+    };
+    let Ok(decoded) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let Some((_, password)) = decoded.split_once(':') else {
+        return false;
+    };
+    !password.contains(':') && plausible_secret_value(password)
+}
+
+/// Standard base64 with optional padding. Reject non-canonical trailing bits so
+/// malformed payloads cannot accidentally decode into credential-shaped text.
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    let padding = bytes.iter().rev().take_while(|&&byte| byte == b'=').count();
+    if padding > 2 || bytes.len() % 4 == 1 || (padding > 0 && !bytes.len().is_multiple_of(4)) {
+        return None;
+    }
+    let encoded_len = bytes.len() - padding;
+    if (padding == 1 && encoded_len % 4 != 3) || (padding == 2 && encoded_len % 4 != 2) {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(encoded_len * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for &byte in &bytes[..encoded_len] {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    if bits > 0 && buffer & ((1 << bits) - 1) != 0 {
+        return None;
+    }
+    Some(out)
 }
 
 /// Group 1 is the name, groups 2–4 are the quoting alternatives for the value.
