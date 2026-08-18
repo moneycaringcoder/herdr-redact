@@ -8,12 +8,21 @@
 //! invisible from a unit test of anything smaller.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::time::Duration;
 
-use redact::config::Config;
+use redact::config::{self, Config};
 use redact::daemon::{
-    badge_plan, badge_plan_with, forwarded_args, should_scan, ActiveBadges, BadgeOp,
+    badge_plan, badge_plan_for_cycle, badge_plan_with, end_quiet, forwarded_args,
+    parse_quiet_duration, quiet_badge_plan, quiet_until_at, should_scan, start_quiet, ActiveBadges,
+    BadgeOp, MAX_QUIET,
 };
+use redact::findings::Store;
 use redact::model::{Alert, Confidence, Finding, PaneRef, Report};
+use redact::scan::{self, Rules};
 
 /// Badge text as `render::badge` is contracted to produce it: the empty string
 /// for a clear target, and something short otherwise.
@@ -408,4 +417,186 @@ fn a_missing_value_is_an_error_rather_than_a_silent_drop() {
 
     let err = forwarded_args(&args).expect_err("no value");
     assert!(err.to_string().contains("--interval"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Quiet mode
+// ---------------------------------------------------------------------------
+
+fn env_lock() -> MutexGuard<'static, ()> {
+    static LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    LOCK.lock().unwrap()
+}
+
+struct StateDir {
+    path: PathBuf,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl StateDir {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let guard = env_lock();
+        let path = std::env::temp_dir().join(format!(
+            "redact-quiet-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        std::env::set_var("HERDR_PLUGIN_STATE_DIR", &path);
+        Self {
+            path,
+            _guard: guard,
+        }
+    }
+
+    fn marker(&self, contents: &str) {
+        fs::write(config::quiet_file(), contents).unwrap();
+    }
+}
+
+impl Drop for StateDir {
+    fn drop(&mut self) {
+        std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn quiet_plan_clears_every_token_from_panes_and_workspaces() {
+    let panes = [pane("wB:p2", "wB"), pane("wA:p1", "wA")];
+    let ops = quiet_badge_plan(&panes);
+
+    assert_eq!(ops.len(), 12);
+    assert!(ops.iter().all(|op| matches!(
+        op,
+        BadgeOp::ClearPane { .. } | BadgeOp::ClearWorkspace { .. }
+    )));
+    assert_eq!(
+        ops.iter()
+            .filter(|op| matches!(op, BadgeOp::ClearPane { .. }))
+            .count(),
+        6
+    );
+    assert_eq!(
+        ops.iter()
+            .filter(|op| matches!(op, BadgeOp::ClearWorkspace { .. }))
+            .count(),
+        6
+    );
+}
+
+#[test]
+fn entering_quiet_sweeps_once_and_staying_quiet_does_nothing() {
+    let panes = [pane("wE:p2", "wE")];
+    let report = report(vec![finding("wE:p2", "wE", Confidence::Strong)]);
+
+    let entering = badge_plan_for_cycle(&ActiveBadges::default(), &report, &panes, true, false);
+    assert_eq!(entering, quiet_badge_plan(&panes));
+
+    let staying = badge_plan_for_cycle(&ActiveBadges::default(), &report, &panes, true, true);
+    assert!(staying.is_empty(), "{staying:?}");
+}
+
+#[test]
+fn the_first_cycle_after_expiry_relights_current_findings() {
+    let panes = [pane("wE:p2", "wE")];
+    let report = report(vec![finding("wE:p2", "wE", Confidence::Strong)]);
+
+    let ops = badge_plan_for_cycle(&ActiveBadges::default(), &report, &panes, false, true);
+
+    assert!(ops.iter().any(|op| matches!(op, BadgeOp::SetPane { .. })));
+    assert!(ops
+        .iter()
+        .any(|op| matches!(op, BadgeOp::SetWorkspace { .. })));
+}
+
+#[test]
+fn duration_syntax_is_minutes_or_a_minutes_or_hours_suffix() {
+    assert_eq!(
+        parse_quiet_duration("10").unwrap(),
+        (Duration::from_secs(600), false)
+    );
+    assert_eq!(
+        parse_quiet_duration("10m").unwrap(),
+        (Duration::from_secs(600), false)
+    );
+    assert_eq!(
+        parse_quiet_duration("1h").unwrap(),
+        (Duration::from_secs(3_600), false)
+    );
+}
+
+#[test]
+fn a_requested_pause_beyond_the_ceiling_is_clamped_in_the_marker() {
+    let state = StateDir::new();
+    let before = redact::model::now();
+    let started = start_quiet("5h").unwrap();
+    let stored: u64 = fs::read_to_string(config::quiet_file())
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    assert!(started.clamped);
+    assert_eq!(stored, started.until);
+    assert!(stored >= before + MAX_QUIET.as_secs());
+    assert!(stored <= redact::model::now() + MAX_QUIET.as_secs());
+    drop(state);
+}
+
+#[test]
+fn an_expired_marker_is_ignored_and_removed() {
+    let state = StateDir::new();
+    state.marker("999");
+
+    assert_eq!(quiet_until_at(1_000), None);
+    assert!(!config::quiet_file().exists());
+}
+
+#[test]
+fn corrupt_or_unparseable_markers_are_loud() {
+    let state = StateDir::new();
+    state.marker("not-a-time");
+
+    assert_eq!(quiet_until_at(1_000), None);
+    assert!(!config::quiet_file().exists());
+}
+
+#[test]
+fn a_marker_in_the_past_never_leaves_the_plugin_quiet() {
+    let state = StateDir::new();
+    state.marker("0");
+
+    assert_eq!(quiet_until_at(u64::MAX), None);
+    assert!(!config::quiet_file().exists());
+}
+
+#[test]
+fn an_overlong_marker_is_rejected_as_ambiguous() {
+    let state = StateDir::new();
+    state.marker(&(1_000 + MAX_QUIET.as_secs() + 1).to_string());
+
+    assert_eq!(quiet_until_at(1_000), None);
+    assert!(!config::quiet_file().exists());
+}
+
+#[test]
+fn quiet_does_not_stop_scanning_recording_or_saving_findings() {
+    let state = StateDir::new();
+    start_quiet("10m").unwrap();
+    let config = Config::default();
+    let rules = Rules::builtin();
+    let mut store = Store::load(&config);
+    let credential = ["AKIA", "ABCDEFGHIJKLMNOP"].concat();
+    let matches = scan::scan(&credential, &rules, store.key());
+
+    assert!(!matches.is_empty(), "the pane text was not scanned");
+    store.observe(&pane("wE:p2", "wE"), &matches, 1_000);
+    store.save().unwrap();
+
+    let reloaded = Store::load(&config);
+    assert_eq!(reloaded.findings().len(), matches.len());
+    assert!(quiet_until_at(redact::model::now()).is_some());
+    end_quiet().unwrap();
+    drop(state);
 }

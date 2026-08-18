@@ -292,6 +292,7 @@ you leave one out, findings at that level simply show nothing.
 | **Redact: list detection rules** | The rules that are actually active, built-in and yours |
 | **Redact: acknowledge all findings** | Clears every current warning |
 | **Redact: enable / disable / toggle pane watcher** | Starts or stops background scanning |
+| **Redact: quiet for 10 minutes / resume warnings** | Temporarily hides badges and toasts, or ends that pause early |
 
 There is one pane, **Redact: findings**, placed as an overlay. It runs the live view shown above,
 refreshes on the configured interval, and acknowledges through the same store the CLI and the daemon
@@ -331,6 +332,9 @@ Watcher:
   --restore           Restart it only if it was enabled (herdr startup hook)
   --daemon            Run the watcher in the foreground (internal)
   --status            Report whether the watcher is running
+  --quiet <DURATION>  Hide badges and toasts for minutes, `10m`, or `1h` (max 4h)
+  --loud              End quiet mode early
+
 
 Sidebar setup:
   --setup             Add redact's tokens to herdr's config.toml and reload
@@ -359,6 +363,16 @@ The watcher is off until you enable it. Once enabled it survives a herdr restart
 `herdr update --handoff`: a startup hook re-spawns it, but only if you had it enabled when herdr went
 away. Disabling it stops the watcher and sweeps every badge this plugin set, so nothing stale is left
 behind.
+
+`redact --quiet <DURATION>` is a timed display pause for screen sharing and demos. A bare number is
+minutes; `10m` and `1h` are also accepted. Pauses longer than four hours are clamped to four hours.
+`redact --loud` ends the pause early. The plugin actions provide a ten-minute pause and an immediate
+resume.
+
+Quiet mode hides badges and notifications, but it does **not** stop reading panes. The watcher keeps
+scanning, recording findings, and saving its store, and the findings pane keeps listing what it finds.
+Use `redact --disable` when you want to stop the watcher from reading panes; quiet is not a substitute
+for disable.
 
 ## Configuration
 

@@ -550,6 +550,11 @@ pub fn pid_file() -> PathBuf {
 pub fn enabled_flag() -> PathBuf {
     state_dir().join("enabled")
 }
+/// Marker: badges and notifications are hidden until the absolute Unix
+/// timestamp stored in this file. The daemon keeps scanning while it exists.
+pub fn quiet_file() -> PathBuf {
+    state_dir().join("quiet")
+}
 
 /// Persisted findings and acknowledgements.
 pub fn findings_file() -> PathBuf {
