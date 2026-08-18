@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::config::{self, Config};
 use crate::findings::Store;
 use crate::herdr::{self, Herdr};
-use crate::model::{Alert, PaneRef, Report};
+use crate::model::{Alert, Calibration, CalibrationHit, DigestKey, PaneRef, Report};
 use crate::scan::{self, Rules};
 use crate::{render, Result};
 
@@ -183,6 +183,28 @@ pub fn run(args: &[String]) -> Result<()> {
 // The scan cycle
 // ---------------------------------------------------------------------------
 
+/// Compile the rules used by every scanning path, preserving warnings that
+/// would otherwise make a degraded rule set look complete.
+fn rules_for_scan(config: &Config, notes: &mut Vec<String>) -> Rules {
+    // A rule the user typed that will not compile is fatal for `--rules`, where
+    // they are looking right at it. A scanning path must not stop protecting
+    // every built-in format because one configured regex is bad.
+    let rules = match Rules::compile(config) {
+        Ok(rules) => rules,
+        Err(err) => {
+            notes.push(format!(
+                "a configured pattern did not compile ({err}); scanning with the built-in rules \
+                 only — the rules you added are NOT active"
+            ));
+            Rules::builtin()
+        }
+    };
+    // A setting the user believes is protecting them and is not is exactly the
+    // kind of silence this plugin cannot afford.
+    notes.extend(rules.notes.iter().cloned());
+    rules
+}
+
 /// One full cycle over an existing client: snapshot, read each pane, scan, fold
 /// into the store. Shared by the daemon and by the one-shot verbs, so they can
 /// never disagree about what a scan is.
@@ -217,24 +239,7 @@ pub fn scan_cycle_within(
     let now = crate::model::now();
     let mut notes = Vec::new();
 
-    // A rule the user typed that will not compile is fatal for `--rules` and
-    // `--once`, where they are looking right at it. Here it must not be: a
-    // scanner that stops scanning because of one bad regex protects nothing.
-    let rules = match Rules::compile(config) {
-        Ok(rules) => rules,
-        Err(err) => {
-            notes.push(format!(
-                "a configured pattern did not compile ({err}); scanning with the built-in rules \
-                 only — the rules you added are NOT active"
-            ));
-            Rules::builtin()
-        }
-    };
-    // Things the rule set wants to say about itself — a configuration flag that
-    // does nothing, for instance. Folded in rather than dropped: a setting the
-    // user believes is protecting them and is not is exactly the kind of silence
-    // this plugin cannot afford.
-    notes.extend(rules.notes.iter().cloned());
+    let rules = rules_for_scan(config, &mut notes);
 
     // A findings pane that scans itself reports its own masked previews for
     // ever, and every one of them looks like a real finding.
@@ -367,6 +372,98 @@ pub fn scan_once(config: &Config) -> Result<Report> {
     let report = scan_cycle(&mut client, config, &mut store)?;
     store.save()?;
     Ok(report)
+}
+
+/// Run the active rules over one snapshot without creating persistent state or
+/// mutating anything in herdr.
+pub fn calibrate(config: &Config) -> Result<Calibration> {
+    let mut client = Herdr::connect()?;
+    let panes = client.panes()?;
+    let generated_at = crate::model::now();
+    let mut notes = Vec::new();
+    let rules = rules_for_scan(config, &mut notes);
+    let own_pane = config::non_empty_env("HERDR_PANE_ID");
+
+    let (readable, skipped): (Vec<&PaneRef>, Vec<&PaneRef>) = panes
+        .iter()
+        .partition(|pane| should_scan(pane, config, own_pane.as_deref()));
+    let panes_skipped = skipped.len();
+    let budget = config.cycle_budget();
+    let deadline = Instant::now() + budget;
+    let mut hits = Vec::new();
+    let mut panes_scanned = 0usize;
+    let mut panes_truncated = 0usize;
+    let mut failed = 0usize;
+    let mut unread = 0usize;
+
+    // Calibration has no store to remember a cursor and no later cycle to make
+    // up missed work, so its single snapshot starts at the first readable pane.
+    //
+    // A zero key is correct here only: calibration has no cycles and nothing
+    // to recognise across them. Reusing it anywhere persistent would turn the
+    // digest into a guessing oracle.
+    let digest_key: DigestKey = [0; 16];
+    for pane in readable {
+        if Instant::now() >= deadline {
+            unread += 1;
+            continue;
+        }
+        let text = match client.read_pane(&pane.pane_id, config.lines) {
+            Ok(text) => text,
+            Err(err) => {
+                failed += 1;
+                match herdr::error_code(&*err) {
+                    Some("pane_not_found") => notes.push(format!(
+                        "pane {} closed while it was being read",
+                        pane.pane_id
+                    )),
+                    _ => notes.push(format!("pane {} could not be read: {err}", pane.pane_id)),
+                }
+                continue;
+            }
+        };
+
+        panes_scanned += 1;
+        if text.truncated {
+            panes_truncated += 1;
+            notes.push(format!(
+                "pane {} had more output than the {}-line budget; anything above it was not \
+                 scanned",
+                pane.pane_id, config.lines
+            ));
+        }
+
+        let scanned = scan::scan_reporting(&text.text, &rules, &digest_key);
+        for note in scanned.notes {
+            notes.push(format!("pane {}: {note}", pane.pane_id));
+        }
+        hits.extend(scanned.matches.into_iter().map(|matched| CalibrationHit {
+            pane_id: pane.pane_id.clone(),
+            pane_label: pane.label().to_string(),
+            workspace_id: pane.workspace_id.clone(),
+            matched,
+        }));
+    }
+
+    if unread > 0 {
+        notes.push(format!(
+            "{unread} pane(s) were not read before this calibration's {budget:?} budget ran out; \
+             calibration has no later cycle, so this result is incomplete"
+        ));
+    }
+    if failed > 0 && panes_scanned == 0 {
+        notes.push("every pane read failed, so nothing was scanned during calibration".to_string());
+    }
+
+    Ok(Calibration {
+        hits,
+        panes_scanned,
+        panes_skipped,
+        panes_unread: failed + unread,
+        panes_truncated,
+        notes,
+        generated_at,
+    })
 }
 
 /// Whether this pane's output should be read at all.

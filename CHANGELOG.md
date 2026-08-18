@@ -28,6 +28,14 @@ at least one minor cycle.
   scheduled and manual only, it is not a required check, and a red canary is a
   signal to read herdr's recent changes rather than a reason to hold a pull
   request.
+- `redact --calibrate`, which runs the active rule set over your own pane output
+  and reports what it *would* have fired on, badging nothing and acknowledging
+  nothing. Precision is what this plugin sells, and precision is measurable;
+  measuring it against your own terminal before trusting it is a better argument
+  than anything in this README. It writes nothing at all — not a finding, not the
+  digest key, not even the state directory, because it never constructs the store
+  in the first place. `--all-panes` is worth pairing with it: the noisiest surface
+  is the one worth measuring.
 
 ### Changed
 
