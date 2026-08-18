@@ -263,6 +263,7 @@ fn nothing_the_renderers_produce_contains_a_value() {
         );
     }
     assert_clean("report_json", &redact::render::report_json(&report));
+    assert_clean("report_sarif", &redact::render::report_sarif(&report));
     assert_clean("Report::Debug", &format!("{report:?}"));
 
     for alert in [Alert::Clear, Alert::Weak, Alert::Secret] {
