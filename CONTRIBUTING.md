@@ -33,7 +33,7 @@ that appear in terminals all day — git SHAs, UUIDs, base64 image blobs, Englis
 words beginning `sk-` — and it is asserted at **100% precision**. Any false
 positive fails the suite.
 
-This is why there is no entropy heuristic on by default, and why several plausible
+This is why there is no entropy heuristic, and why several plausible
 rules were deliberately left out. A missed exotic key format is an acceptable
 cost; a warning on ordinary build output is not.
 

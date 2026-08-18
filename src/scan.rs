@@ -47,11 +47,10 @@
 //!
 //! # Entropy
 //!
-//! `config.entropy` is **not implemented**. A Shannon-entropy heuristic over
-//! terminal output is the false-positive machine this plugin exists to avoid
-//! being, and there is no version of it that survives a page of base64 or a
-//! minified bundle. Setting the flag is not an error, but it changes nothing:
-//! [`Rules::compile`] records a note saying so.
+//! There is no entropy heuristic. A Shannon-entropy heuristic over terminal
+//! output is the false-positive machine this plugin exists to avoid being, and
+//! there is no version of it that survives a page of base64 or a minified
+//! bundle.
 
 use regex::{Captures, Regex, RegexBuilder};
 
@@ -87,6 +86,7 @@ struct Rule {
     name: String,
     label: String,
     confidence: Confidence,
+    explain: &'static str,
     regex: Regex,
     /// Capture groups holding the value, most specific first; the first one that
     /// participated in the match wins. `[0]` means "the whole match".
@@ -105,11 +105,18 @@ struct Rule {
 }
 
 impl Rule {
-    fn new(name: &str, label: &str, confidence: Confidence, pattern: &str) -> Self {
+    fn new(
+        name: &str,
+        label: &str,
+        confidence: Confidence,
+        explain: &'static str,
+        pattern: &str,
+    ) -> Self {
         Self {
             name: name.to_string(),
             label: label.to_string(),
             confidence,
+            explain,
             regex: Regex::new(pattern).expect("built-in pattern is valid"),
             groups: vec![0],
             standalone: false,
@@ -143,6 +150,15 @@ impl Rule {
     fn value<'t>(&self, caps: &Captures<'t>) -> Option<regex::Match<'t>> {
         self.groups.iter().find_map(|&group| caps.get(group))
     }
+}
+
+/// A rule's public metadata and rationale. It cannot carry a matched value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Explanation {
+    pub name: String,
+    pub label: String,
+    pub confidence: Confidence,
+    pub text: String,
 }
 
 /// The compiled rule set: built-in provider patterns, the user's extra patterns,
@@ -191,6 +207,7 @@ impl Rules {
                 } else {
                     Confidence::Weak
                 },
+                explain: "This rule comes from the user's `patterns` configuration and has no built-in reasoning.",
                 regex,
                 groups: vec![0],
                 standalone: false,
@@ -206,13 +223,8 @@ impl Rules {
             );
         }
 
-        let mut notes = Vec::new();
-        if config.entropy {
-            notes.push(
-                "the entropy heuristic is not implemented; `entropy = true` has no effect"
-                    .to_string(),
-            );
-        }
+        // The channel for what a rule set could not do; empty when there is nothing to report.
+        let notes = Vec::new();
 
         Ok(Self {
             names: names_of(&rules),
@@ -233,12 +245,43 @@ impl Rules {
         }
     }
 
+    /// Returns the metadata and rationale for one exact machine name.
+    pub fn explanation(&self, name: &str) -> Option<Explanation> {
+        self.rules
+            .iter()
+            .find(|rule| rule.name == name)
+            .map(explanation_of)
+    }
+
+    /// Returns active rule explanations in declaration order, one per machine name.
+    pub fn explanations(&self) -> Vec<Explanation> {
+        let mut explanations = Vec::with_capacity(self.names.len());
+        for rule in &self.rules {
+            if !explanations
+                .iter()
+                .any(|explanation: &Explanation| explanation.name == rule.name)
+            {
+                explanations.push(explanation_of(rule));
+            }
+        }
+        explanations
+    }
+
     /// A finding is dropped when the allowlist matches either the matched value
     /// or the whole line it was found on.
     fn allowed(&self, value: &str, line: &str) -> bool {
         self.allowlist
             .iter()
             .any(|entry| entry.is_match(value) || entry.is_match(line))
+    }
+}
+
+fn explanation_of(rule: &Rule) -> Explanation {
+    Explanation {
+        name: rule.name.clone(),
+        label: rule.label.clone(),
+        confidence: rule.confidence,
+        text: rule.explain.to_string(),
     }
 }
 
@@ -288,6 +331,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "aws_access_key_id",
             "AWS access key ID",
             Confidence::Strong,
+            "Matches `AKIA` or `ASIA` followed by 16 uppercase base32-style characters. Those are the access-key prefixes, and a structural check rejects a tail made from one repeated character so redactions, banners, and placeholders do not fire.",
             r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b",
         )
         .standalone()
@@ -303,6 +347,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "aws_principal_id",
             "AWS principal ID (identifier, not a credential)",
             Confidence::Weak,
+            "Matches the `AGPA`, `AIDA`, `AROA`, `AIPA`, `ANPA`, `ANVA`, and `APKA` identifier prefixes followed by 16 or 17 uppercase base32-style characters, rejecting a tail made from one repeated character. It is weak and separate because these are identifiers rather than credentials and full-length values appear in ordinary `aws sts get-caller-identity` and IAM output.",
             r"\b(?:AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16,17}",
         )
         .standalone()
@@ -313,6 +358,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "aws_secret_access_key",
             "AWS secret access key",
             Confidence::Strong,
+            "Matches exactly 40 base64 characters only beside the AWS secret access key name, because a bare 40-character base64 run would cause false positives.",
             r#"(?i)aws[_-]?secret[_-]?access[_-]?key["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})"#,
         )
         .groups(&[1]),
@@ -320,6 +366,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "github_token",
             "GitHub token",
             Confidence::Strong,
+            "Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 36 alphanumeric characters.",
             r"\bgh[pousr]_[A-Za-z0-9]{36,}",
         )
         .standalone(),
@@ -327,6 +374,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "github_pat",
             "GitHub fine-grained token",
             Confidence::Strong,
+            "Matches `github_pat_`, a 22-character alphanumeric component, an underscore, and a 59-character alphanumeric component.",
             r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}",
         )
         .standalone(),
@@ -334,6 +382,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "anthropic_api_key",
             "Anthropic API key",
             Confidence::Strong,
+            "Matches `sk-ant-` followed by at least 32 characters from the alphanumeric, underscore, and hyphen alphabet.",
             r"\bsk-ant-[A-Za-z0-9_-]{32,}",
         )
         .standalone(),
@@ -343,6 +392,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "openai_api_key",
             "OpenAI API key",
             Confidence::Strong,
+            "Matches `sk-proj-`, `sk-svcacct-`, or `sk-admin-` followed by at least 20 full-alphabet characters, or `sk-` followed by exactly 48 alphanumeric characters. Requiring the complete token alphabet keeps prose such as `sk-learn` and `sk-ms-version` out.",
             r"\bsk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{48})",
         )
         .standalone(),
@@ -350,6 +400,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "stripe_secret_key",
             "Stripe live secret key",
             Confidence::Strong,
+            "Matches only live `sk_live_` and `rk_live_` keys followed by at least 20 alphanumeric characters. Test keys are deliberately excluded because they live in public documentation, CI fixtures, and sample apps, and firing on them would be cry-wolf noise.",
             r"\b(?:sk|rk)_live_[A-Za-z0-9]{20,}",
         )
         .standalone(),
@@ -357,6 +408,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "slack_token",
             "Slack token",
             Confidence::Strong,
+            "Matches `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, or `xoxs-` followed by at least 12 alphanumeric or hyphen characters.",
             r"\bxox[baprs]-[A-Za-z0-9-]{12,}",
         )
         .standalone(),
@@ -364,6 +416,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "google_api_key",
             "Google API key",
             Confidence::Strong,
+            "Matches `AIza` followed by exactly 35 characters from the alphanumeric, underscore, and hyphen alphabet.",
             r"\bAIza[A-Za-z0-9_-]{35}",
         )
         .standalone(),
@@ -373,6 +426,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "google_oauth_client_secret",
             "Google OAuth client secret",
             Confidence::Strong,
+            "Matches `GOCSPX-` followed by exactly 28 characters from the alphanumeric, underscore, and hyphen alphabet; the prefix is what makes the rule precise enough to ship.",
             r"\bGOCSPX-[A-Za-z0-9_-]{28}",
         )
         .standalone(),
@@ -382,6 +436,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "jwt",
             "JSON Web Token",
             Confidence::Strong,
+            "Matches three sufficiently long base64url segments beginning with `eyJ`, then fires only when the header segment base64url-decodes to a JSON object carrying a string `alg`. Version strings, file names, and base64 blobs that merely contain two dots are rejected.",
             r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
         )
         .standalone()
@@ -392,18 +447,21 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "private_key_block",
             "Private key block",
             Confidence::Strong,
+            "Matches a private-key opening marker and, when present, its body and closing marker. The closing block is optional so a key cut off by the pane's line budget still reports.",
             r"-----BEGIN [A-Z0-9 ]{0,32}PRIVATE KEY(?: BLOCK)?-----(?s:.*?-----END [A-Z0-9 ]{0,32}PRIVATE KEY(?: BLOCK)?-----)?",
         ),
         Rule::new(
             "slack_webhook_url",
             "Slack webhook URL",
             Confidence::Strong,
+            "Matches the Slack webhook host and services path followed by three alphanumeric path components of at least 8, 8, and 20 characters.",
             r"https://hooks\.slack\.com/services/[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}",
         ),
         Rule::new(
             "npm_token",
             "npm access token",
             Confidence::Strong,
+            "Matches `npm_` followed by exactly 36 alphanumeric characters.",
             r"\bnpm_[A-Za-z0-9]{36}",
         )
         .standalone(),
@@ -411,6 +469,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "pypi_token",
             "PyPI API token",
             Confidence::Strong,
+            "Matches `pypi-AgEIcHlwaS5vcmc` followed by at least 40 characters from the alphanumeric, underscore, and hyphen alphabet.",
             r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{40,}",
         )
         .standalone(),
@@ -418,6 +477,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "sendgrid_api_key",
             "SendGrid API key",
             Confidence::Strong,
+            "Matches `SG.`, a 22-character component, a dot, and a 43-character component, with both components restricted to the alphanumeric, underscore, and hyphen alphabet.",
             r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
         )
         .standalone(),
@@ -425,6 +485,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "gitlab_pat",
             "GitLab personal access token",
             Confidence::Strong,
+            "Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet.",
             r"\bglpat-[A-Za-z0-9_-]{20,}",
         )
         .standalone(),
@@ -432,6 +493,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "huggingface_token",
             "Hugging Face token",
             Confidence::Strong,
+            "Matches `hf_` followed by at least 34 alphanumeric characters.",
             r"\bhf_[A-Za-z0-9]{34,}",
         )
         .standalone(),
@@ -445,6 +507,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "age_secret_key",
             "age secret key",
             Confidence::Strong,
+            "Matches the private half of an age keypair: `AGE-SECRET-KEY-1` followed by exactly 58 Bech32 characters. The public `age1` recipient is deliberately excluded because it is not a secret, and the body omits `1`, `B`, `I`, and `O` as required by that alphabet.",
             r"\bAGE-SECRET-KEY-1[02-9A-HJ-NP-Z]{58}\b",
         )
         .standalone(),
@@ -456,6 +519,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "url_credentials",
             "URL with embedded credentials",
             Confidence::Weak,
+            "Matches only the password portion of a scheme-based URL containing user information. It is weak because connection-string examples commonly have this shape, and the password must pass the placeholder filter.",
             r"\b[a-zA-Z][a-zA-Z0-9+.-]{1,15}://[^\s/:@]{1,64}:([^\s/:@]{1,128})@",
         )
         .groups(&[1])
@@ -467,6 +531,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
             "http_bearer_token",
             "HTTP bearer token",
             Confidence::Weak,
+            "Matches at least 16 credential-alphabet characters following an `Authorization: Bearer` header. It is weak because agents commonly print that header in curl commands, and the captured token must pass the placeholder filter.",
             r"(?i)authorization[ \t]*:[ \t]*bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})",
         )
         .groups(&[1])
@@ -483,6 +548,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
                 "env_assignment",
                 "Secret-looking assignment",
                 Confidence::Weak,
+                "Matches secret-looking shell assignments and YAML or JSON-style mappings anchored at the start of a line. It requires a secret-ish name segment, rejects a bare `*_KEY` because names such as `GPG_KEY` and `CACHE_KEY` are ordinary output, and drops placeholder values. The mapping form requires whitespace after the colon so ARN and URL text does not fire.",
                 r#"(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))"#,
             )
             .groups(&[2, 3, 4])
@@ -496,6 +562,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
                 "env_assignment",
                 "Secret-looking assignment",
                 Confidence::Weak,
+                "Matches secret-looking shell assignments and YAML or JSON-style mappings anchored at the start of a line. It requires a secret-ish name segment, rejects a bare `*_KEY` because names such as `GPG_KEY` and `CACHE_KEY` are ordinary output, and drops placeholder values. The mapping form requires whitespace after the colon so ARN and URL text does not fire.",
                 r#"(?m)^[ \t-]*"?([A-Za-z_][A-Za-z0-9_.-]*)"?[ \t]*:[ \t]+(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\r\n]*))"#,
             )
             .groups(&[2, 3, 4])
