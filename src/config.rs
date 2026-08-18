@@ -64,9 +64,6 @@ pub struct Config {
     /// The `.env`-style assignment heuristic (`FOO_TOKEN=…`). On, but it reports
     /// at `Confidence::Weak` and gets its own badge token.
     pub env_assignments: bool,
-    /// The entropy heuristic. **Off by default and staying that way** — it is
-    /// the false-positive machine this plugin exists to avoid being.
-    pub entropy: bool,
     /// Post a herdr toast for a new finding. Rate limited to one per pattern per
     /// pane per daemon run regardless of this setting.
     pub notify: bool,
@@ -89,7 +86,6 @@ impl Default for Config {
             lines: DEFAULT_LINES,
             scan_all_panes: false,
             env_assignments: true,
-            entropy: false,
             notify: true,
             patterns: Vec::new(),
             allowlist: Vec::new(),
@@ -184,7 +180,6 @@ struct FileConfig {
     lines: Option<u32>,
     scan_all_panes: Option<bool>,
     env_assignments: Option<bool>,
-    entropy: Option<bool>,
     notify: Option<bool>,
     patterns: Option<Vec<CustomPattern>>,
     allowlist: Option<Vec<String>>,
@@ -230,9 +225,6 @@ fn load_file() -> Config {
     }
     if let Some(env) = file.env_assignments {
         config.env_assignments = env;
-    }
-    if let Some(entropy) = file.entropy {
-        config.entropy = entropy;
     }
     if let Some(notify) = file.notify {
         config.notify = notify;

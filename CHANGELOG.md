@@ -41,6 +41,17 @@ at least one minor cycle.
   redact worked for you, say so on the issue tracker and the floor can come back
   down with evidence behind it.
 
+### Removed
+
+- The `entropy` configuration key. It was accepted, did nothing, and recorded a
+  note saying so — a key you can set that silently changes nothing is worse than
+  no key, and this was never a feature waiting to be built. A Shannon-entropy
+  heuristic over terminal output is the false-positive machine this plugin
+  exists to avoid being, and the project has decided against it rather than
+  deferred it. A config file that still sets `entropy` keeps loading: it is now
+  an unknown key, and unknown keys are ignored, so nothing breaks and nothing
+  needs editing.
+
 ## [0.1.0] - 2026-08-16
 
 ### Added

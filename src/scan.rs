@@ -47,11 +47,10 @@
 //!
 //! # Entropy
 //!
-//! `config.entropy` is **not implemented**. A Shannon-entropy heuristic over
-//! terminal output is the false-positive machine this plugin exists to avoid
-//! being, and there is no version of it that survives a page of base64 or a
-//! minified bundle. Setting the flag is not an error, but it changes nothing:
-//! [`Rules::compile`] records a note saying so.
+//! There is no entropy heuristic. A Shannon-entropy heuristic over terminal
+//! output is the false-positive machine this plugin exists to avoid being, and
+//! there is no version of it that survives a page of base64 or a minified
+//! bundle.
 
 use regex::{Captures, Regex, RegexBuilder};
 
@@ -206,13 +205,8 @@ impl Rules {
             );
         }
 
-        let mut notes = Vec::new();
-        if config.entropy {
-            notes.push(
-                "the entropy heuristic is not implemented; `entropy = true` has no effect"
-                    .to_string(),
-            );
-        }
+        // The channel for what a rule set could not do; empty when there is nothing to report.
+        let notes = Vec::new();
 
         Ok(Self {
             names: names_of(&rules),
