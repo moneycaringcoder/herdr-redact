@@ -215,6 +215,7 @@ fn snapshot() -> Value {
                 "focused": false,
                 "agent": "claude",
                 "agent_status": "working",
+                "cwd": if n % 2 == 0 { "/work/company/project" } else { "/home/me/personal/project" },
                 "revision": 100 + n,
             })
         })
@@ -592,6 +593,99 @@ fn a_failing_pane_read_does_not_abandon_the_cycle() {
             report.notes.iter().any(|note| note.contains(pane_id)),
             "no note names the pane that could not be read: {:?}",
             report.notes
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn one_cycle_uses_each_panes_effective_allowlist() {
+    let _guard = env_lock();
+    let server = TestServer::start(Duration::from_millis(0));
+    let state = sandbox("overlay-allowlist");
+    let config = Config::from_json(
+        r#"{
+            "overlays": [{
+                "match": {"path_prefix": "/work/company"},
+                "allowlist": ["GITHUB_TOKEN="]
+            }]
+        }"#,
+    )
+    .expect("config");
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    let (report, _) =
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("cycle");
+
+    assert_eq!(report.panes_scanned, PANES);
+    assert_eq!(
+        report.findings.len(),
+        PANES / 2,
+        "the company overlay should silence only its own four panes"
+    );
+    assert!(
+        report.findings.iter().all(|finding| {
+            finding
+                .pane_id
+                .strip_prefix("w1:p")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n % 2 == 1)
+        }),
+        "a company-pane finding escaped its effective allowlist: {:?}",
+        report.findings
+    );
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn rule_set_cache_hits_do_not_cross_pane_overlays() {
+    let _guard = env_lock();
+    let server = TestServer::start(Duration::from_millis(0));
+    let state = sandbox("overlay-cache");
+    let config = Config::from_json(
+        r#"{
+            "allowlist": ["GITHUB_TOKEN="],
+            "overlays": [
+                {
+                    "match": {"path_prefix": "/work/company"},
+                    "patterns": [{"name": "company_marker", "regex": "done"}]
+                },
+                {
+                    "match": {"path_prefix": "/home/me/personal"},
+                    "patterns": [{"name": "personal_marker", "regex": "done"}]
+                }
+            ]
+        }"#,
+    )
+    .expect("config");
+    let mut client = connect(&server, &state);
+    let mut store = Store::load(&config);
+
+    let (report, _) =
+        daemon::scan_cycle_within(&mut client, &config, &mut store, Duration::from_secs(30))
+            .expect("cycle");
+
+    assert_eq!(report.panes_scanned, PANES);
+    assert_eq!(report.findings.len(), PANES);
+    for finding in &report.findings {
+        let pane_number = finding
+            .pane_id
+            .strip_prefix("w1:p")
+            .and_then(|n| n.parse::<usize>().ok())
+            .expect("synthetic pane id");
+        let expected = if pane_number % 2 == 0 {
+            "company_marker"
+        } else {
+            "personal_marker"
+        };
+        assert_eq!(
+            finding.pattern, expected,
+            "pane {} received another pane context's cached rules",
+            finding.pane_id
         );
     }
 

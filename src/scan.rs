@@ -69,6 +69,13 @@ use crate::Result;
 /// says so in [`Scan::notes`] instead of truncating in silence.
 const MAX_MATCHES_PER_RULE: usize = 500;
 
+/// A structured value may use no more than this many physical lines after its
+/// key. This is deliberately small: terminal output is usually a document
+/// fragment, and an unterminated quote must not consume the rest of a pane.
+const MAX_CONTINUATION_LINES: usize = 8;
+
+const MULTILINE_CREDENTIAL_RULE: &str = "multiline_credential";
+
 /// Compiled size ceiling for a user-supplied regex, so a pathological pattern
 /// cannot eat memory at compile time.
 const REGEX_SIZE_LIMIT: usize = 1 << 20;
@@ -219,7 +226,7 @@ impl Rules {
         // that can have something to say: an unknown pack name is reported and
         // ignored rather than failing, so a typo narrows the rule set in the
         // open rather than in silence.
-        let (enabled_packs, notes) = selected_rule_packs(&config.rule_packs);
+        let (enabled_packs, mut notes) = selected_rule_packs(&config.rule_packs);
         let mut rules = builtin_rules(config.env_assignments, &enabled_packs);
         for pattern in &config.patterns {
             let name = pattern.name.trim();
@@ -262,6 +269,10 @@ impl Rules {
         }
 
         let (names, packs) = names_and_packs_of(&rules);
+        // Overlay parsing is deliberately lenient, so its diagnostics ride along
+        // with anything pack selection had to say. An overlay that was ignored
+        // has to be visible in every effective rule set it did not reach.
+        notes.extend(config.notes.iter().cloned());
 
         Ok(Self {
             names,
@@ -668,6 +679,16 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             .narrowed()
             .check(is_secret_assignment),
         );
+        // A bounded pre-pass joins only an explicitly quoted JSON/YAML value or
+        // a YAML block scalar. The regex finds a possible key line; the scanner
+        // below owns the structural and length checks.
+        rules.push(Rule::new(
+            MULTILINE_CREDENTIAL_RULE,
+            "Multi-line structured credential",
+            Confidence::Weak,
+            "Matches a credential-shaped key whose value continues onto following lines, as a GCP service-account key, a Kubernetes secret manifest or a YAML block scalar prints one. The key must pass the same secret-ish name test the single-line assignment rule uses, the join is bounded to eight continuation lines and 4096 characters, and the joined value still has to survive the placeholder filter. It is weak because a key-and-value line is the shape of almost all structured output; where the joined value turns out to be something a strong rule validates on its own merits, that rule reports it instead. A bare `auth` key deliberately cannot start a join, because `AUTH` is a key qualifier rather than a secret-ish name and the single-line Docker rule already covers that shape.",
+            r#"(?m)^[ \t-]*"?([A-Za-z_][A-Za-z0-9_.-]*)"?[ \t]*:[ \t]*([^\r\n]*)$"#,
+        ));
     }
 
     rules.retain(|rule| rule.pack.is_some_and(|pack| enabled_packs.contains(&pack)));
@@ -1086,6 +1107,204 @@ fn standalone(text: &str, start: usize, end: usize) -> bool {
     !before.is_some_and(continues_token_before) && !after.is_some_and(continues_token_after)
 }
 
+/// A normalized credential assembled from a bounded structured value. The
+/// source range exists only for ordering and overlap resolution; the owned value
+/// is the exact string that validation, masking and digesting use.
+struct JoinedValue {
+    value: String,
+    source_start: usize,
+    source_end: usize,
+    line_start: usize,
+}
+
+/// The next physical line after `after`, returned as content byte offsets plus
+/// the byte at which another call should continue.
+fn following_line(text: &str, after: usize) -> Option<(usize, usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut start = after;
+    if bytes.get(start) == Some(&b'\r') {
+        start += 1;
+    }
+    if bytes.get(start) != Some(&b'\n') {
+        return None;
+    }
+    start += 1;
+    let raw_end = text[start..]
+        .find('\n')
+        .map_or(text.len(), |relative| start + relative);
+    let end = if raw_end > start && bytes[raw_end - 1] == b'\r' {
+        raw_end - 1
+    } else {
+        raw_end
+    };
+    Some((start, end, raw_end))
+}
+
+fn trimmed_span(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
+    let bytes = text.as_bytes();
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    (start, end)
+}
+
+fn closing_quote(value: &str, quote: u8) -> Option<usize> {
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        if byte == quote && !escaped {
+            return Some(index);
+        }
+        if byte == b'\\' {
+            escaped = !escaped;
+        } else {
+            escaped = false;
+        }
+    }
+    None
+}
+
+fn push_joined(joined: &mut String, joined_chars: &mut usize, fragment: &str) -> bool {
+    let fragment_chars = fragment.chars().count();
+    if *joined_chars + fragment_chars > MAX_VALUE_LEN {
+        return false;
+    }
+    joined.push_str(fragment);
+    *joined_chars += fragment_chars;
+    true
+}
+
+fn quote_tail_is_structural(tail: &str) -> bool {
+    matches!(tail.trim(), "" | ",")
+}
+
+/// Join one JSON/YAML quoted continuation or YAML block scalar. This is not a
+/// parser: it recognizes only the two credential shapes cloud tools print and
+/// never examines more than [`MAX_CONTINUATION_LINES`] lines.
+fn join_multiline_value(text: &str, caps: &Captures<'_>) -> Option<JoinedValue> {
+    let whole = caps.get(0)?;
+    let rest = caps.get(2)?;
+    let key_indent = whole
+        .as_str()
+        .bytes()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    let rest_text = rest.as_str().trim();
+
+    if matches!(rest_text, "|" | "|-" | "|+" | ">" | ">-" | ">+") {
+        let mut joined = String::new();
+        let mut joined_chars = 0usize;
+        let mut cursor = whole.end();
+        let mut source_end = whole.end();
+        let mut has_content = false;
+        for _ in 0..MAX_CONTINUATION_LINES {
+            let Some((line_start, line_end, next)) = following_line(text, cursor) else {
+                break;
+            };
+            let line = &text[line_start..line_end];
+            let indent = line
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            let (value_start, value_end) = trimmed_span(text, line_start, line_end);
+            if value_start != value_end && indent <= key_indent {
+                break;
+            }
+            if !push_joined(
+                &mut joined,
+                &mut joined_chars,
+                &text[value_start..value_end],
+            ) {
+                return None;
+            }
+            has_content |= value_start != value_end;
+            source_end = line_end;
+            cursor = next;
+        }
+        return has_content.then_some(JoinedValue {
+            value: joined,
+            source_start: whole.start(),
+            source_end,
+            line_start: whole.start(),
+        });
+    }
+
+    let mut joined = String::new();
+    let mut joined_chars = 0usize;
+    let mut cursor = whole.end();
+    let mut continuation_lines = 0usize;
+    let (quote, first_start, first_end) =
+        if let Some(quote @ (b'"' | b'\'')) = rest_text.as_bytes().first().copied() {
+            let offset = rest.as_str().find(rest_text)?;
+            let start = rest.start() + offset + 1;
+            (quote, start, rest.end())
+        } else if rest_text.is_empty() {
+            let (line_start, line_end, next) = following_line(text, cursor)?;
+            let (trimmed_start, trimmed_end) = trimmed_span(text, line_start, line_end);
+            let quote @ (b'"' | b'\'') = text.as_bytes().get(trimmed_start).copied()? else {
+                return None;
+            };
+            continuation_lines = 1;
+            cursor = next;
+            (quote, trimmed_start + 1, trimmed_end)
+        } else {
+            return None;
+        };
+
+    let first = &text[first_start..first_end];
+    if let Some(close) = closing_quote(first, quote) {
+        if continuation_lines == 0 || !quote_tail_is_structural(&first[close + 1..]) {
+            return None;
+        }
+        let fragment = first[..close].trim();
+        if !push_joined(&mut joined, &mut joined_chars, fragment) {
+            return None;
+        }
+        return Some(JoinedValue {
+            value: joined,
+            source_start: whole.start(),
+            source_end: first_start + close,
+            line_start: whole.start(),
+        });
+    }
+    if !push_joined(&mut joined, &mut joined_chars, first.trim()) {
+        return None;
+    }
+    let mut source_end = first_end;
+
+    while continuation_lines < MAX_CONTINUATION_LINES {
+        let Some((line_start, line_end, next)) = following_line(text, cursor) else {
+            break;
+        };
+        continuation_lines += 1;
+        cursor = next;
+        let (value_start, value_end) = trimmed_span(text, line_start, line_end);
+        let fragment = &text[value_start..value_end];
+        if let Some(close) = closing_quote(fragment, quote) {
+            if !quote_tail_is_structural(&fragment[close + 1..])
+                || !push_joined(&mut joined, &mut joined_chars, &fragment[..close])
+            {
+                return None;
+            }
+            source_end = value_start + close;
+            break;
+        }
+        if !push_joined(&mut joined, &mut joined_chars, fragment) {
+            return None;
+        }
+        source_end = line_end;
+    }
+
+    (continuation_lines > 0 && !joined.is_empty()).then_some(JoinedValue {
+        value: joined,
+        source_start: whole.start(),
+        source_end,
+        line_start: whole.start(),
+    })
+}
+
 /// Byte offset of the start of each line, so a match can be turned into a line
 /// number with a binary search rather than a rescan.
 struct LineIndex {
@@ -1117,12 +1336,62 @@ impl LineIndex {
     }
 }
 
-/// One surviving match before overlap resolution.
+/// One surviving match before overlap resolution. Joined values stay private to
+/// this module just like slices of the input; only their mask, length and digest
+/// are exported.
 struct Candidate {
     rule: usize,
     start: usize,
     end: usize,
+    line_start: usize,
     confidence: Confidence,
+    joined_value: Option<String>,
+}
+
+impl Candidate {
+    fn value<'a>(&'a self, text: &'a str) -> &'a str {
+        self.joined_value
+            .as_deref()
+            .unwrap_or(&text[self.start..self.end])
+    }
+}
+
+/// Apply every existing strong rule to a normalized joined value. The longest
+/// validated span wins, preserving declaration order on a tie.
+fn joined_strong_match(
+    joined: &str,
+    rules: &Rules,
+    multiline_rule: usize,
+) -> Option<(usize, usize, usize)> {
+    let mut best: Option<(usize, usize, usize)> = None;
+    for (index, rule) in rules.rules.iter().enumerate() {
+        if index == multiline_rule || rule.confidence != Confidence::Strong {
+            continue;
+        }
+        for caps in rule.regex.captures_iter(joined) {
+            let Some(found) = rule.value(&caps) else {
+                continue;
+            };
+            let (mut start, mut end) = (found.start(), found.end());
+            if rule.narrow_value {
+                let (inner_start, inner_end) = narrow_span(found.as_str());
+                end = start + inner_end;
+                start += inner_start;
+            }
+            if start == end
+                || (rule.standalone && !standalone(joined, start, end))
+                || rule.check.is_some_and(|check| !check(&caps))
+            {
+                continue;
+            }
+            if best.is_none_or(|(_, current_start, current_end)| {
+                end - start > current_end - current_start
+            }) {
+                best = Some((index, start, end));
+            }
+        }
+    }
+    best
 }
 
 /// Every credential-shaped thing in `text`, in the order they appear.
@@ -1161,7 +1430,54 @@ pub fn scan_reporting(text: &str, rules: &Rules, key: &DigestKey) -> Scan {
 
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut truncated: Vec<&str> = Vec::new();
+    let multiline_rule = rules
+        .rules
+        .iter()
+        .position(|rule| rule.name == MULTILINE_CREDENTIAL_RULE);
+    if let Some(multiline_index) = multiline_rule {
+        let rule = &rules.rules[multiline_index];
+        let mut found_here = 0usize;
+        for caps in rule.regex.captures_iter(text) {
+            let Some(name) = caps.get(1) else {
+                continue;
+            };
+            if !secretish_name(name.as_str()) {
+                continue;
+            }
+            let Some(mut joined) = join_multiline_value(text, &caps) else {
+                continue;
+            };
+            let candidate_rule = if let Some((strong_rule, start, end)) =
+                joined_strong_match(&joined.value, rules, multiline_index)
+            {
+                joined.value.truncate(end);
+                joined.value.drain(..start);
+                strong_rule
+            } else {
+                if !plausible_secret_value(&joined.value) {
+                    continue;
+                }
+                multiline_index
+            };
+            candidates.push(Candidate {
+                rule: candidate_rule,
+                start: joined.source_start,
+                end: joined.source_end,
+                line_start: joined.line_start,
+                confidence: rules.rules[candidate_rule].confidence,
+                joined_value: Some(joined.value),
+            });
+            found_here += 1;
+            if found_here >= MAX_MATCHES_PER_RULE {
+                truncated.push(&rule.name);
+                break;
+            }
+        }
+    }
     for (index, rule) in rules.rules.iter().enumerate() {
+        if Some(index) == multiline_rule {
+            continue;
+        }
         let mut found_here = 0usize;
         for caps in rule.regex.captures_iter(text) {
             let Some(found) = rule.value(&caps) else {
@@ -1195,7 +1511,9 @@ pub fn scan_reporting(text: &str, rules: &Rules, key: &DigestKey) -> Scan {
                 rule: index,
                 start,
                 end,
+                line_start: start,
                 confidence: rule.confidence,
+                joined_value: None,
             });
             found_here += 1;
             // Only this rule stops. A flood of weak matches must not be able to
@@ -1216,18 +1534,20 @@ pub fn scan_reporting(text: &str, rules: &Rules, key: &DigestKey) -> Scan {
     if !rules.allowlist.is_empty() {
         candidates.retain(|candidate| {
             !rules.allowed(
-                &text[candidate.start..candidate.end],
-                lines.line_text(text, candidate.start),
+                candidate.value(text),
+                lines.line_text(text, candidate.line_start),
             )
         });
     }
 
-    // Strongest first, then longest, then leftmost, then declaration order, so
-    // the greedy sweep below keeps the match a human would have picked.
+    // Strongest first, then joined spans, longest, leftmost, and declaration
+    // order. Preferring a joined span only affects the new path and ensures an
+    // overlapping strong rule reports the normalized value on the key's line.
     candidates.sort_by(|a, b| {
         b.confidence
             .cmp(&a.confidence)
-            .then((b.end - b.start).cmp(&(a.end - a.start)))
+            .then(b.joined_value.is_some().cmp(&a.joined_value.is_some()))
+            .then(b.value(text).len().cmp(&a.value(text).len()))
             .then(a.start.cmp(&b.start))
             .then(a.rule.cmp(&b.rule))
     });
@@ -1247,7 +1567,7 @@ pub fn scan_reporting(text: &str, rules: &Rules, key: &DigestKey) -> Scan {
     let matches = kept
         .into_iter()
         .map(|candidate| {
-            let value = &text[candidate.start..candidate.end];
+            let value = candidate.value(text);
             let rule = &rules.rules[candidate.rule];
             Match {
                 pattern: rule.name.clone(),
@@ -1255,7 +1575,7 @@ pub fn scan_reporting(text: &str, rules: &Rules, key: &DigestKey) -> Scan {
                 confidence: rule.confidence,
                 preview: mask(value),
                 value_len: value.chars().count(),
-                line: lines.line_of(candidate.start),
+                line: lines.line_of(candidate.line_start),
                 digest: digest(key, value),
             }
         })

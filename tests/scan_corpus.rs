@@ -270,6 +270,13 @@ const POSITIVE: &[Vector] = &[
         value: "Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
         preview: "Zx9Q\u{2026}1Vf6",
     },
+    Vector {
+        rule: "multiline_credential",
+        confidence: Confidence::Weak,
+        text: "password: |-\n  Zx9Qw7Lm2Kd8\n  Rt5Yb3Nc1Vf6",
+        value: "Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        preview: "Zx9Q\u{2026}1Vf6",
+    },
     // Short and low entropy, but a password all the same — the keyed digest in
     // `model` exists precisely so this one can be tracked without storing a
     // guessable hash of it.
@@ -279,6 +286,77 @@ const POSITIVE: &[Vector] = &[
         text: "PASSWORD=hunter2",
         value: "hunter2",
         preview: "h\u{2026}2",
+    },
+];
+
+struct StructuredVector {
+    name: &'static str,
+    rule: &'static str,
+    confidence: Confidence,
+    text: &'static str,
+    value: &'static str,
+    line: usize,
+}
+
+const MULTILINE_POSITIVE: &[StructuredVector] = &[
+    StructuredVector {
+        name: "GCP service-account JSON",
+        rule: "private_key_block",
+        confidence: Confidence::Strong,
+        text: r#"{
+  "type": "service_account",
+  "private_key": "-----BEGIN PRIVATE KEY-----\n
+    RkFLRUdDUFNlcnZpY2VBY2NvdW50S2V5MDEyMzQ1Njc4OQ==\n
+    -----END PRIVATE KEY-----\n"
+}"#,
+        value: r"-----BEGIN PRIVATE KEY-----\nRkFLRUdDUFNlcnZpY2VBY2NvdW50S2V5MDEyMzQ1Njc4OQ==\n-----END PRIVATE KEY-----",
+        line: 3,
+    },
+    StructuredVector {
+        name: "Kubernetes Secret manifest",
+        rule: "multiline_credential",
+        confidence: Confidence::Weak,
+        text: r#"apiVersion: v1
+kind: Secret
+metadata:
+  name: obviously-fake
+type: Opaque
+data:
+  password: |-
+    RkFLRV9LVUJFUk5FVEVTX1BB
+    U1NXT1JEX0ExQTFBMUExQTFBMQ=="#,
+        value: "RkFLRV9LVUJFUk5FVEVTX1BBU1NXT1JEX0ExQTFBMUExQTFBMQ==",
+        line: 7,
+    },
+    StructuredVector {
+        name: "YAML block scalar password",
+        rule: "multiline_credential",
+        confidence: Confidence::Weak,
+        text: r#"database:
+  password: >-
+    Zx9Qw7Lm2Kd8
+    Rt5Yb3Nc1Vf6"#,
+        value: "Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        line: 2,
+    },
+    StructuredVector {
+        name: "YAML quoted continuation",
+        rule: "multiline_credential",
+        confidence: Confidence::Weak,
+        text: r#"password: "Zx9Qw7Lm2Kd8
+  Rt5Yb3Nc1Vf6""#,
+        value: "Zx9Qw7Lm2Kd8Rt5Yb3Nc1Vf6",
+        line: 1,
+    },
+    StructuredVector {
+        name: "quoted JWT continuation",
+        rule: "jwt",
+        confidence: Confidence::Strong,
+        text: r#""access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
+  eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.
+  SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c""#,
+        value: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+        line: 1,
     },
 ];
 
@@ -376,6 +454,50 @@ token: refreshed successfully
 secret: null
 password: not set
 hash=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3
+
+Pretty-printed placeholders in structured logs:
+{
+  "password": "***",
+  "token": null,
+  "secret": "",
+  "api_key": "REDACTED"
+}
+
+package-lock.json integrity metadata wrapped by a log renderer:
+{
+
+  "integrity": "sha512-Kx3fZ0ZQ1kQ9m6xkzYQ4b7VvV0m0m5cQ2p1sT3nQ0nZ5xkO9vX2mQ8n1kZ9f2p3
+    Kx3fZ0ZQ1kQ9m6xkzYQ4b7VvV0m0m5cQ2p1sT3nQ0nZ5xkO9vX2mQ8n1kZ9f2p3=="
+}
+
+The same structured placeholders wrapped over YAML block scalars:
+password: |-
+  ***
+token: >
+  null
+secret: |
+  ""
+api_key: >-
+  REDACTED
+
+# This multi-line comment explains where an operator would configure a
+# password, but it deliberately contains no credential value.
+# password:
+#   supplied by the deployment environment
+
+thumbnail: |
+  iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGA
+  hKmMIQAAAABJRU5ErkJgggAAABase64ImagePayloadThatIsOnlyDocumentation
+data: >
+  iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAACXBIWXMAAAsTAAALEwEAmpwY
+  AAAgAElEQVR4nOy9d3xUVfr48ffMZDLpvSekEEJCSSCE3nvvXar0ItJEUFFRQFF0RVFRQVBB
+
+{
+  "secret": {
+    "provider": "deployment-environment",
+    "required": true
+  }
+}
 
 # "key" is the most overloaded word in a terminal. Every line in this block is
 # ordinary output, and every one of them used to be reported as a credential.
@@ -508,6 +630,41 @@ fn every_builtin_rule_has_a_vector() {
         assert!(
             POSITIVE.iter().any(|vector| vector.rule == name),
             "rule `{name}` has no positive vector"
+        );
+    }
+}
+
+#[test]
+fn multiline_structured_credentials_report_the_joined_validated_value() {
+    let rules = builtin();
+    for vector in MULTILINE_POSITIVE {
+        let matches = scan(vector.text, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{} produced {matches:?}", vector.name);
+        let found = &matches[0];
+        assert_eq!(found.pattern, vector.rule, "rule for {}", vector.name);
+        assert_eq!(
+            found.confidence, vector.confidence,
+            "confidence for {}",
+            vector.name
+        );
+        assert_eq!(
+            found.preview,
+            mask(vector.value),
+            "preview for {}",
+            vector.name
+        );
+        assert_eq!(
+            found.value_len,
+            vector.value.chars().count(),
+            "length for {}",
+            vector.name
+        );
+        assert_eq!(found.line, vector.line, "line for {}", vector.name);
+        assert_eq!(
+            found.digest,
+            digest(&KEY, vector.value),
+            "digest for {}",
+            vector.name
         );
     }
 }
@@ -1191,6 +1348,35 @@ fn many_lines_scan_quickly() {
         started.elapsed().as_secs() < 5,
         "{} bytes took too long",
         text.len()
+    );
+}
+
+#[test]
+fn multiline_join_is_bounded_by_lines_length_and_time() {
+    let rules = builtin();
+    let first_eight = "A1b2C3d4".repeat(8);
+    let mut thousands = String::from("password: |-\n");
+    for _ in 0..8 {
+        thousands.push_str("  A1b2C3d4\n");
+    }
+    for _ in 0..10_000 {
+        thousands.push_str("  SHOULD_NOT_BE_JOINED_9z\n");
+    }
+
+    let started = Instant::now();
+    let matches = scan(&thousands, &rules, &KEY);
+    let elapsed = started.elapsed();
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "multiline_credential");
+    assert_eq!(matches[0].line, 1);
+    assert_eq!(matches[0].value_len, first_eight.len());
+    assert_eq!(matches[0].digest, digest(&KEY, &first_eight));
+    assert!(elapsed.as_secs() < 5, "10,000 lines took {elapsed:?}");
+
+    let over_limit = format!("password: |-\n  {}\n", "A1b2".repeat(1_025));
+    assert!(
+        scan(&over_limit, &rules, &KEY).is_empty(),
+        "a joined value longer than 4,096 characters was reported"
     );
 }
 
