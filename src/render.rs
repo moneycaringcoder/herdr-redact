@@ -268,6 +268,9 @@ struct Row {
     pane: String,
     preview: String,
     age: String,
+    agent: Option<String>,
+    cwd: Option<String>,
+    foreground_process_when_first_seen: Option<String>,
 }
 
 fn row_of(finding: &Finding, now: u64) -> Row {
@@ -286,6 +289,17 @@ fn row_of(finding: &Finding, now: u64) -> Row {
         // store recorded it at the time of the sighting, so a renamed agent
         // does not rewrite history.
         pane: finding.pane_label.clone(),
+        agent: finding.agent.clone(),
+        cwd: finding.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+        foreground_process_when_first_seen: match (
+            finding.foreground_process_name_when_first_seen.as_deref(),
+            finding.foreground_process_pid_when_first_seen,
+        ) {
+            (Some(name), Some(pid)) => Some(format!("{name} (pid {pid})")),
+            (Some(name), None) => Some(name.to_string()),
+            (None, Some(pid)) => Some(format!("pid {pid}")),
+            (None, None) => None,
+        },
         preview: finding.preview.clone(),
         age: age(now, finding.first_seen),
     }
@@ -350,8 +364,8 @@ fn push_table(out: &mut String, report: &Report, width: usize, selected: Option<
     }
 }
 
-/// The narrow-pane fallback: one finding over two lines rather than a table
-/// squeezed until every column is an ellipsis.
+/// The narrow-pane fallback: each finding is stacked rather than squeezed
+/// into a table, with provenance on following lines when it was available.
 fn push_stacked(out: &mut String, rows: &[Row], width: usize, selected: Option<usize>) {
     for (index, row) in rows.iter().enumerate() {
         let gutter = if selected == Some(index) {
@@ -372,6 +386,33 @@ fn push_stacked(out: &mut String, rows: &[Row], width: usize, selected: Option<u
             ),
             width,
         );
+        if let Some(agent) = &row.agent {
+            push_wrapped(
+                out,
+                "      ",
+                "        ",
+                &format!("agent when first seen: {agent}"),
+                width,
+            );
+        }
+        if let Some(cwd) = &row.cwd {
+            push_wrapped(
+                out,
+                "      ",
+                "        ",
+                &format!("working directory when first seen: {cwd}"),
+                width,
+            );
+        }
+        if let Some(process) = &row.foreground_process_when_first_seen {
+            push_wrapped(
+                out,
+                "      ",
+                "        ",
+                &format!("foreground process when first seen: {process}"),
+                width,
+            );
+        }
     }
 }
 
@@ -483,7 +524,7 @@ pub fn report_json(report: &Report) -> String {
         .findings
         .iter()
         .map(|finding| {
-            json!({
+            let mut value = json!({
                 "id": finding.id,
                 "short_id": finding.short_id(),
                 "pattern": finding.pattern,
@@ -499,7 +540,28 @@ pub fn report_json(report: &Report) -> String {
                 "last_seen": finding.last_seen,
                 "age_seconds": report.generated_at.saturating_sub(finding.first_seen),
                 "acknowledged": finding.acknowledged,
-            })
+            });
+            if let Some(object) = value.as_object_mut() {
+                if let Some(agent) = &finding.agent {
+                    object.insert("agent".to_string(), json!(agent));
+                }
+                if let Some(cwd) = &finding.cwd {
+                    object.insert("cwd".to_string(), json!(cwd.display().to_string()));
+                }
+                if let Some(name) = &finding.foreground_process_name_when_first_seen {
+                    object.insert(
+                        "foreground_process_name_when_first_seen".to_string(),
+                        json!(name),
+                    );
+                }
+                if let Some(pid) = finding.foreground_process_pid_when_first_seen {
+                    object.insert(
+                        "foreground_process_pid_when_first_seen".to_string(),
+                        json!(pid),
+                    );
+                }
+            }
+            value
         })
         .collect();
 

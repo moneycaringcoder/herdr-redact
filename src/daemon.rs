@@ -326,7 +326,22 @@ pub fn scan_cycle_within(
             for note in scanned.notes {
                 notes.push(format!("pane {}: {note}", pane.pane_id));
             }
-            store.observe(pane, &scanned.matches, now);
+            let fresh = store.observe(pane, &scanned.matches, now);
+            // Process context costs another socket round trip, so only ask for
+            // it after this pane produced a finding that did not already exist.
+            // It is useful context, not scan coverage: failure is deliberately
+            // silent and never costs the pane its finding or badge.
+            if !fresh.is_empty() {
+                if let Ok(process) = client.process_info(&pane.pane_id) {
+                    if process.pane_id == pane.pane_id {
+                        store.record_foreground_process_when_first_seen(
+                            &fresh,
+                            process.foreground_process_name.as_deref(),
+                            process.foreground_process_pid,
+                        );
+                    }
+                }
+            }
         }
     }
 

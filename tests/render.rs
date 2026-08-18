@@ -134,6 +134,10 @@ fn finding(id: &str, label: &str, pane_label: &str) -> Finding {
         pane_id: "w0:p1".to_string(),
         workspace_id: "w0".to_string(),
         pane_label: pane_label.to_string(),
+        agent: None,
+        cwd: None,
+        foreground_process_name_when_first_seen: None,
+        foreground_process_pid_when_first_seen: None,
         line: 42,
         digest: 0xdead_beef,
         first_seen: NOW - 90,
@@ -327,6 +331,72 @@ fn every_finding_survives_every_width() {
                 text.contains(finding.short_id()),
                 "{} vanished at width {width}:\n{text}",
                 finding.short_id()
+            );
+        }
+    }
+}
+
+#[test]
+fn stacked_findings_and_json_carry_provenance_when_present() {
+    let mut found = finding("a1b2c3", "AWS access key ID", "claude");
+    found.agent = Some("claude".to_string());
+    found.cwd = Some("/home/dev/repos/app".into());
+    found.foreground_process_name_when_first_seen = Some("curl".to_string());
+    found.foreground_process_pid_when_first_seen = Some(4310);
+    let report = Report {
+        findings: vec![found],
+        panes_scanned: 1,
+        generated_at: NOW,
+        ..Report::default()
+    };
+
+    let stacked = flatten(&report_text(&report, 40));
+    assert!(
+        stacked.contains("agent when first seen: claude"),
+        "{stacked}"
+    );
+    assert!(
+        stacked.contains("working directory when first seen: /home/dev/repos/app"),
+        "{stacked}"
+    );
+    assert!(
+        stacked.contains("foreground process when first seen: curl (pid 4310)"),
+        "{stacked}"
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_str(&report_json(&report)).expect("report JSON");
+    let finding = &value["findings"][0];
+    assert_eq!(finding["agent"], "claude");
+    assert_eq!(finding["cwd"], "/home/dev/repos/app");
+    assert_eq!(finding["foreground_process_name_when_first_seen"], "curl");
+    assert_eq!(finding["foreground_process_pid_when_first_seen"], 4310);
+}
+
+#[test]
+fn absent_provenance_is_omitted_cleanly() {
+    let report = populated();
+    let stacked = flatten(&report_text(&report, 40));
+    for label in [
+        "agent when first seen",
+        "working directory when first seen",
+        "foreground process when first seen",
+    ] {
+        assert!(!stacked.contains(label), "{label:?} appeared in {stacked}");
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(&report_json(&report)).expect("report JSON");
+    for finding in value["findings"].as_array().expect("findings") {
+        for key in [
+            "agent",
+            "cwd",
+            "foreground_process_name_when_first_seen",
+            "foreground_process_pid_when_first_seen",
+        ] {
+            assert!(
+                finding.get(key).is_none(),
+                "{key} was not omitted: {finding}"
             );
         }
     }

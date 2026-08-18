@@ -85,7 +85,7 @@ fn pane(pane_id: &str) -> PaneRef {
         workspace_label: "media-throughput".to_string(),
         agent: Some("rev-media".to_string()),
         title: None,
-        cwd: None,
+        cwd: Some("/home/dev/repos/media-throughput".into()),
     }
 }
 
@@ -176,6 +176,7 @@ fn an_acknowledgement_survives_a_save_and_a_reload() {
     let id = {
         let mut store = Store::load(&config);
         let fresh = store.observe(&pane("wE:p2"), &[a_match("aws_access_key_id", 7)], 100);
+        store.record_foreground_process_when_first_seen(&fresh, Some("curl"), Some(4310));
         store.acknowledge_all();
         store.save().expect("save");
         fresh[0].id.clone()
@@ -190,6 +191,58 @@ fn an_acknowledgement_survives_a_save_and_a_reload() {
     assert_eq!(finding.confidence, Confidence::Strong);
     assert_eq!(finding.value_len, FAKE_CREDENTIAL.len());
     assert_eq!(finding.first_seen, 100);
+    assert_eq!(finding.agent.as_deref(), Some("rev-media"));
+    assert_eq!(
+        finding.cwd.as_deref(),
+        Some(std::path::Path::new("/home/dev/repos/media-throughput"))
+    );
+    assert_eq!(
+        finding.foreground_process_name_when_first_seen.as_deref(),
+        Some("curl")
+    );
+    assert_eq!(finding.foreground_process_pid_when_first_seen, Some(4310));
+    drop(state);
+}
+
+#[test]
+fn a_state_file_from_before_provenance_loads_without_a_note() {
+    let state = StateDir::new();
+    fs::write(
+        state.findings_file(),
+        serde_json::json!({
+            "version": 1,
+            "findings": [{
+                "id": "0123456789abcdef",
+                "pattern": "aws_access_key_id",
+                "label": "AWS access key ID",
+                "confidence": "strong",
+                "preview": "AKIA…MPLE",
+                "value_len": 20,
+                "pane_id": "wE:p2",
+                "workspace_id": "wE",
+                "pane_label": "rev-media",
+                "line": 12,
+                "digest": 7,
+                "first_seen": 100,
+                "last_seen": 100,
+                "acknowledged": false
+            }]
+        })
+        .to_string(),
+    )
+    .expect("write old state");
+
+    let store = Store::load(&config(500));
+    let findings = store.findings();
+    let finding = only(&findings);
+    assert!(finding.agent.is_none());
+    assert!(finding.cwd.is_none());
+    assert!(finding.foreground_process_name_when_first_seen.is_none());
+    assert!(finding.foreground_process_pid_when_first_seen.is_none());
+    assert!(
+        store.report(Vec::new()).notes.is_empty(),
+        "an additive old shape must not be reported as malformed"
+    );
     drop(state);
 }
 

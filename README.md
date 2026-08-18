@@ -30,9 +30,12 @@ Everything else about it is built to make that safe:
   action you invoke is you asking it to look.
 - **No secret is ever written anywhere.** Not to a log, not to the state file, not into a toast, not
   into the JSON output, not into a badge. A finding records the rule that fired, the pane it fired
-  in, the length of the value, a keyed fingerprint used only to recognise the same finding again —
-  and a **masked preview** showing at most the first four and the last four characters, and never
-  more than a third of the value. A short value renders as a bare `…` and nothing else.
+  in, the agent and working directory, and the foreground process name and pid herdr reported when
+  the finding was first seen. It also records the length of the value, a keyed fingerprint used only
+  to recognise the same finding again, and a **masked preview** showing at most the first four and the
+  last four characters, and never more than a third of the value. A short value renders as a bare `…`
+  and nothing else. The command line and terminal title are deliberately **not** recorded: both can
+  contain the credential itself, as in a `curl -H "Authorization: Bearer …"` command.
 - **The value exists in one function and then stops existing.** The scanner is a pure function over a
   string; the type it returns has no field a raw value could travel in, so "did we leak it?" is a
   question about one module rather than about the whole program. The test suite holds that line from
@@ -67,6 +70,10 @@ that is running an agent, and scans it. What comes out of the scanner is already
 
 A finding stays until you acknowledge it. A secret that has scrolled out of view is still in that
 pane's scrollback and still exposed, so "it went away on its own" is not a state this plugin has.
+
+The process name and pid are a snapshot of the foreground process when the finding was first seen,
+not a claim that the process printed the line. Process context is requested only after a pane produces
+a new finding; a failed or empty context lookup does not affect the finding or its badge.
 
 Each cycle has a reading budget, because reading is one round trip per pane and a loaded server can
 take over a second for one of them. When the budget runs out the cycle stops, says how many panes it
@@ -141,9 +148,9 @@ An acknowledged finding stays in the table, marked `✓` and sorted below the li
 value is still sitting in that pane's scrollback.
 
 `a` acknowledges the selected finding, `A` acknowledges every one of them, `j`/`k` or the arrow keys
-move the selection, and `q` quits. The view reflows down to very narrow panes, and where a pane is
-too narrow for a table each finding is stacked over two lines instead of being squeezed into a column
-of ellipses.
+move the selection, and `q` quits. The view reflows down to very narrow panes. Where a pane is too
+narrow for a table, each finding is stacked and the agent, working directory, and foreground process
+when first seen appear on following lines when herdr supplied them.
 
 **A scan that found nothing and a scan that could not look do not render the same.** Six panes scanned
 and clean says so in words; a cycle that hit a problem says the scan did not complete cleanly and
