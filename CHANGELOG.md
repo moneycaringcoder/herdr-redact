@@ -38,6 +38,16 @@ at least one minor cycle.
   that this plugin promises never contains one. The process is described as what
   was running when the finding was first seen, never as what produced it,
   because that is the part herdr can actually tell us.
+- The watcher now reads each pane's available scrollback once, the first time it
+  reaches that pane, and the ordinary window on every cycle after that. Until
+  now a credential that scrolled past before you enabled the watcher was never
+  found, which is the gap between "I turned this on" and "this has been watching
+  all along". The depth is `backfill_lines`, 5000 by default; `0` restores the
+  old behaviour exactly. The cycle budget and the round-robin are unchanged, so
+  a large session simply spreads its backfill over several cycles — and a
+  backfill that could not reach the whole history says so in a note of its own,
+  distinct from the one about the ordinary window. `--once` and `--json` do not
+  backfill: they are interactive verbs, and this is the watcher's blind spot.
 - Three detection rules, each with a positive vector and negative vectors for
   the nearest innocent lookalike: `jdbc_url_password` (a password carried in a
   JDBC connection string, anchored on the `jdbc:` scheme so it cannot decay into
