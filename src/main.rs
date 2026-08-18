@@ -29,6 +29,9 @@ Watcher:
   --restore           Restart it only if it was enabled (herdr startup hook)
   --daemon            Run the watcher in the foreground (internal)
   --status            Report whether the watcher is running
+  --quiet <DURATION>  Hide badges and toasts for minutes, `10m`, or `1h` (max 4h)
+  --loud              End quiet mode early
+
 
 Sidebar setup:
   --setup             Add redact's tokens to herdr's config.toml and reload
@@ -105,6 +108,8 @@ fn run(args: &[String]) -> Result<()> {
         "--forget" => forget(),
         "--enable" => daemon::enable(args),
         "--disable" => daemon::disable(),
+        "--quiet" => quiet(args),
+        "--loud" => loud(),
         "--toggle" => daemon::toggle(args),
         "--restore" => daemon::restore(),
         "--daemon" => daemon::run(args),
@@ -237,6 +242,27 @@ fn forget() -> Result<()> {
     Ok(())
 }
 
+fn quiet(args: &[String]) -> Result<()> {
+    let duration = config::value_arg(args, "--quiet")?.ok_or("--quiet needs a duration")?;
+    let started = daemon::start_quiet(&duration)?;
+    let suffix = if started.clamped {
+        " (clamped to the four-hour maximum)"
+    } else {
+        ""
+    };
+    println!(
+        "redact: quiet until Unix time {}{}; scanning and finding collection continue.",
+        started.until, suffix
+    );
+    Ok(())
+}
+
+fn loud() -> Result<()> {
+    daemon::end_quiet()?;
+    println!("redact: loud; badges and notifications resume on the next watcher cycle.");
+    Ok(())
+}
+
 fn status() -> Result<()> {
     match daemon::live_pid() {
         Some(pid) => println!("redact: watcher running (pid {pid})."),
@@ -244,6 +270,15 @@ fn status() -> Result<()> {
             println!("redact: watcher enabled but not running; `redact --restore` will start it.")
         }
         None => println!("redact: watcher not running."),
+    }
+    if let Some(until) = daemon::quiet_until() {
+        println!(
+            "redact: quiet for another {}, until Unix time {}; findings are still being collected.",
+            daemon::quiet_remaining(until, redact::model::now()),
+            until
+        );
+    } else {
+        println!("redact: loud.");
     }
     Ok(())
 }
@@ -265,6 +300,8 @@ mod tests {
         assert_eq!(verb_of(&args(&["--interval=5", "--json"])), "--json");
         assert_eq!(verb_of(&args(&["--lines", "800", "--watch"])), "--watch");
         assert_eq!(verb_of(&args(&["--all-panes", "--watch"])), "--watch");
+        assert_eq!(verb_of(&args(&["--quiet", "10m"])), "--quiet");
+        assert_eq!(verb_of(&args(&["--loud"])), "--loud");
     }
 
     #[test]

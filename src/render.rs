@@ -139,7 +139,16 @@ pub fn abbreviate(n: u64) -> String {
 /// where that is larger — below that floor the layout stops trying to be pretty,
 /// but it still never overflows.
 pub fn report_text(report: &Report, columns: usize) -> String {
-    render(report, columns, None)
+    report_text_with_quiet(report, columns, daemon::quiet_until(), crate::model::now())
+}
+
+pub fn report_text_with_quiet(
+    report: &Report,
+    columns: usize,
+    quiet_until: Option<u64>,
+    now: u64,
+) -> String {
+    render(report, columns, None, quiet_until, now)
 }
 
 /// Read-only calibration results at an explicit terminal width.
@@ -385,12 +394,21 @@ fn digits(value: usize) -> usize {
 }
 
 /// [`report_text`], plus the watch pane's selection caret.
-fn render(report: &Report, columns: usize, selected: Option<usize>) -> String {
+fn render(
+    report: &Report,
+    columns: usize,
+    selected: Option<usize>,
+    quiet_until: Option<u64>,
+    now: u64,
+) -> String {
     let width = columns.max(MIN_COLUMNS);
     let mut out = String::new();
     push_line(&mut out, TITLE, width);
 
     out.push('\n');
+    if let Some(until) = quiet_until {
+        push_wrapped(&mut out, "", "  ", &quiet_line(until, now), width);
+    }
     for line in summary_lines(report) {
         push_wrapped(&mut out, "", "  ", &line, width);
     }
@@ -409,6 +427,15 @@ fn render(report: &Report, columns: usize, selected: Option<usize>) -> String {
 /// The prose half of the view: what was scanned, what was found, and whether
 /// the scan can be trusted. Every state a report can be in has to be
 /// distinguishable here in words, without reading the table.
+fn quiet_line(until: u64, now: u64) -> String {
+    format!(
+        "QUIET until Unix time {} ({} remaining): badges and notifications are hidden; findings \
+         are still being collected.",
+        until,
+        daemon::quiet_remaining(until, now)
+    )
+}
+
 fn summary_lines(report: &Report) -> Vec<String> {
     let mut lines = Vec::new();
     let total = report.findings.len();
@@ -773,6 +800,10 @@ fn age(now: u64, first_seen: u64) -> String {
 /// something to render, and a keyed hash of a credential is not a thing to hand
 /// to a script that might log it.
 pub fn report_json(report: &Report) -> String {
+    report_json_with_quiet(report, daemon::quiet_until(), crate::model::now())
+}
+
+pub fn report_json_with_quiet(report: &Report, quiet_until: Option<u64>, now: u64) -> String {
     let findings: Vec<serde_json::Value> = report
         .findings
         .iter()
@@ -819,6 +850,7 @@ pub fn report_json(report: &Report) -> String {
         .collect();
 
     let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
+    let quiet_remaining = quiet_until.map(|until| until.saturating_sub(now));
     let value = json!({
         // Bumped only when a key changes meaning, so a script can refuse a
         // shape it does not understand rather than misread it.
@@ -836,6 +868,12 @@ pub fn report_json(report: &Report) -> String {
             "notes": report.notes.len(),
         },
         "notes": report.notes,
+        "quiet": {
+            "active": quiet_until.is_some(),
+            "until": quiet_until,
+            "remaining_seconds": quiet_remaining,
+            "findings_still_collected": quiet_until.is_some(),
+        },
         "findings": findings,
     });
 
@@ -1203,7 +1241,13 @@ fn frame(
 ) -> String {
     let width = columns.max(MIN_COLUMNS);
     let mut out = match report {
-        Some(report) => render(report, columns, interactive.then_some(selected)),
+        Some(report) => render(
+            report,
+            columns,
+            interactive.then_some(selected),
+            daemon::quiet_until(),
+            crate::model::now(),
+        ),
         None => match error {
             Some(err) => return error_frame(err, columns),
             None => {
