@@ -223,8 +223,9 @@ impl Rules {
             );
         }
 
-        // The channel for what a rule set could not do; empty when there is nothing to report.
-        let notes = Vec::new();
+        // Configuration parsing is deliberately lenient for overlays. Preserve
+        // those diagnostics in every inspectable effective rule set.
+        let notes = config.notes.clone();
 
         Ok(Self {
             names: names_of(&rules),

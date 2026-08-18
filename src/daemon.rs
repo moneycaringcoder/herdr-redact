@@ -157,7 +157,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     }
                     reported_notes.clone_from(&report.notes);
 
-                    notify_new(connected, &config, &mut store);
+                    notify_new(connected, &config, &panes, &mut store);
                     push(connected, &config, &report, &panes, &active);
 
                     if let Err(err) = store.save() {
@@ -217,24 +217,12 @@ pub fn scan_cycle_within(
     let now = crate::model::now();
     let mut notes = Vec::new();
 
-    // A rule the user typed that will not compile is fatal for `--rules` and
-    // `--once`, where they are looking right at it. Here it must not be: a
-    // scanner that stops scanning because of one bad regex protects nothing.
-    let rules = match Rules::compile(config) {
-        Ok(rules) => rules,
-        Err(err) => {
-            notes.push(format!(
-                "a configured pattern did not compile ({err}); scanning with the built-in rules \
-                 only — the rules you added are NOT active"
-            ));
-            Rules::builtin()
-        }
-    };
-    // Things the rule set wants to say about itself — a configuration flag that
-    // does nothing, for instance. Folded in rather than dropped: a setting the
-    // user believes is protecting them and is not is exactly the kind of silence
-    // this plugin cannot afford.
-    notes.extend(rules.notes.iter().cloned());
+    // Cache entries are keyed by the complete effective Config, never by pane
+    // identity or matcher. Equal effective configurations share compilation;
+    // different overlays therefore cannot leak a rule set across panes.
+    let base_config = config.base();
+    let base_rules = compile_daemon_rules(&base_config, &mut notes);
+    let mut rule_sets = HashMap::from([(base_config, base_rules)]);
 
     // A findings pane that scans itself reports its own masked previews for
     // ever, and every one of them looks like a real finding.
@@ -247,9 +235,14 @@ pub fn scan_cycle_within(
 
     // Split before reading, so the rotation below is over panes we actually mean
     // to read rather than over the whole session.
-    let (readable, skipped): (Vec<&PaneRef>, Vec<&PaneRef>) = panes
-        .iter()
-        .partition(|pane| should_scan(pane, config, own_pane.as_deref()));
+    let (readable, skipped): (Vec<&PaneRef>, Vec<&PaneRef>) = panes.iter().partition(|pane| {
+        if config.overlays.is_empty() {
+            should_scan(pane, config, own_pane.as_deref())
+        } else {
+            let effective = config.effective_for(pane);
+            should_scan(pane, &effective, own_pane.as_deref())
+        }
+    });
     let skipped = skipped.len();
 
     // A cycle has to finish. Reading is one round trip per pane, and on a busy
@@ -277,7 +270,16 @@ pub fn scan_cycle_within(
             continue;
         }
         cursor = (index + 1) % readable.len();
-        let text = match client.read_pane(&pane.pane_id, config.lines) {
+        let effective_owned = (!config.overlays.is_empty()).then(|| config.effective_for(pane));
+        let effective = effective_owned.as_ref().unwrap_or(config);
+        let lines = effective.lines;
+        let rules = if let Some(rules) = rule_sets.get(effective) {
+            rules
+        } else {
+            let compiled = compile_daemon_rules(effective, &mut notes);
+            rule_sets.entry(effective.clone()).or_insert(compiled)
+        };
+        let text = match client.read_pane(&pane.pane_id, lines) {
             Ok(text) => text,
             Err(err) => {
                 // An error envelope means the server is healthy and told us
@@ -309,7 +311,7 @@ pub fn scan_cycle_within(
             notes.push(format!(
                 "pane {} had more output than the {}-line budget; anything above it was not \
                  scanned",
-                pane.pane_id, config.lines
+                pane.pane_id, lines
             ));
         }
 
@@ -322,7 +324,7 @@ pub fn scan_cycle_within(
             // stopped looking, and a scan that stopped looking must be able to
             // say so. Silence there would mean a flood of weak matches in one
             // pane could hide a real key with nothing to show for it.
-            let scanned = scan::scan_reporting(&text.text, &rules, store.key());
+            let scanned = scan::scan_reporting(&text.text, rules, store.key());
             for note in scanned.notes {
                 notes.push(format!("pane {}: {note}", pane.pane_id));
             }
@@ -358,6 +360,27 @@ pub fn scan_cycle_within(
     report.panes_unread = failed + unread;
     report.panes_truncated = truncated;
     Ok((report, panes))
+}
+fn compile_daemon_rules(config: &Config, notes: &mut Vec<String>) -> Rules {
+    let rules = match Rules::compile(config) {
+        Ok(rules) => rules,
+        Err(err) => {
+            let note = format!(
+                "a configured pattern did not compile ({err}); scanning with the built-in rules \
+                 only — the rules you added are NOT active"
+            );
+            if !notes.contains(&note) {
+                notes.push(note);
+            }
+            Rules::builtin()
+        }
+    };
+    for note in config.notes.iter().chain(&rules.notes) {
+        if !notes.contains(note) {
+            notes.push(note.clone());
+        }
+    }
+    rules
 }
 
 /// One cycle over a fresh connection, for `--once` and `--json`.
@@ -399,13 +422,20 @@ pub fn new_notes(previous: &[String], current: &[String]) -> Vec<String> {
 ///
 /// The queue is drained whether or not notifications are on, so turning them
 /// off does not build a backlog that fires the moment they are turned back on.
-fn notify_new(client: &mut Herdr, config: &Config, store: &mut Store) {
+fn notify_new(client: &mut Herdr, config: &Config, panes: &[PaneRef], store: &mut Store) {
     let fresh = store.take_new_findings();
-    if !config.notify {
-        return;
-    }
     for finding in fresh {
-        if !store.claim_notification(&finding) {
+        let notify = panes
+            .iter()
+            .find(|pane| pane.pane_id == finding.pane_id)
+            .map_or(config.notify, |pane| {
+                if config.overlays.is_empty() {
+                    config.notify
+                } else {
+                    config.effective_for(pane).notify
+                }
+            });
+        if !notify || !store.claim_notification(&finding) {
             continue;
         }
         let (title, body) = toast(&finding);
