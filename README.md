@@ -25,12 +25,12 @@ Everything else about it is built to make that safe:
 - **Background scanning is opt-in.** A fresh install starts nothing and reads nothing on its own.
   Nothing is read until you either enable the watcher or run a scan yourself, and disabling the
   watcher stops the reading and clears every badge it set. To be exact about which of those is which:
-  `--enable` starts the background watcher, and `--once`, `--json` and the **Redact: findings** pane
-  each read panes for as long as you have them open, whether or not the watcher is running. A plugin
-  action you invoke is you asking it to look.
+  `--enable` starts the background watcher, and `--once`, `--json`, `--sarif` and the **Redact:
+  findings** pane each read panes for as long as you have them open, whether or not the watcher is
+  running. A plugin action you invoke is you asking it to look.
 - **No secret is ever written anywhere.** Not to a log, not to the state file, not into a toast, not
-  into the JSON output, not into a badge. A finding records the rule that fired, the pane it fired
-  in, the agent and working directory, and the foreground process name and pid herdr reported when
+  into the JSON or SARIF output, not into a badge. A finding records the rule that fired, the pane it
+  fired in, the agent and working directory, and the foreground process name and pid herdr reported when
   the finding was first seen. It also records the length of the value, a keyed fingerprint used only
   to recognise the same finding again, and a **masked preview** showing at most the first four and the
   last four characters, and never more than a third of the value. A short value renders as a bare `…`
@@ -289,6 +289,7 @@ you leave one out, findings at that level simply show nothing.
 | **Redact: scan now** | One-shot scan of every agent pane |
 | **Redact: calibrate** | Shows what the active rules would have fired on, without storing findings or setting badges |
 | **Redact: JSON snapshot** | The same findings, machine-readable, for scripting |
+| **Redact: SARIF snapshot** | SARIF 2.1.0 findings for security review and incident write-ups |
 | **Redact: list detection rules** | The rules that are actually active, built-in and yours |
 | **Redact: acknowledge all findings** | Clears every current warning |
 | **Redact: enable / disable / toggle pane watcher** | Starts or stops background scanning |
@@ -311,6 +312,7 @@ Scanning:
   --once              Scan every agent pane once, print the findings, exit
   --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
+  --sarif             Print the same findings as SARIF 2.1.0 and exit
   --watch             Live findings pane (a acknowledges, s permanently suppresses)
   --rules [PANE|PATH] List active rules for the base, pane, or working directory
                       A context containing `:` is read as a pane id; anything
@@ -354,6 +356,11 @@ anywhere: findings record the rule name, the pane, and a masked preview.
 Options may come before or after the verb, so `redact --lines 800 --once` and
 `redact --once --lines 800` are the same command.
 
+`redact --sarif` prints SARIF 2.1.0 to stdout, so redirect it with a shell when a file is needed:
+`redact --sarif > findings.sarif`. Values use exactly the same masked previews as every other output
+surface. The export carries the public finding id as a SARIF partial fingerprint and never includes
+the keyed digest.
+
 `redact --suppress <ID>` is the command-line equivalent of pressing `s`. `redact --suppressions`
 lists only each active rule name and a short keyed digest, never a preview. Suppression is permanent
 until `redact --forget` clears it, matches exactly one value for one rule, and applies globally across
@@ -387,7 +394,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | --- | --- | --- |
 | `interval_seconds` | `5` | How often the watcher and the findings pane rescan. Clamped to 1–3600. `--interval <SECS>` overrides it for one run. |
 | `lines` | `400` | Lines of output read per pane per cycle. Clamped to 1–20000. Bigger means more history and more to scan. `--lines <N>` overrides it for one run. |
-| `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once` and `--json` never backfill, because they are interactive commands whose latency you are waiting on. |
+| `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once`, `--json` and `--sarif` never backfill, because they are interactive commands whose latency you are waiting on. |
 | `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
 | `rule_packs` | `["default"]` | Compiled-in rule packs to add. The `default` pack is always active; `[]` therefore means default only, never no scanning. Unknown names produce a note and are ignored. |

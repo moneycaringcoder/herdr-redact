@@ -23,8 +23,8 @@ use redact::model::{
     Alert, Calibration, CalibrationHit, Confidence, Finding, Match, PaneRef, Report,
 };
 use redact::render::{
-    abbreviate, badge, calibration_text, report_json, report_json_with_quiet, report_text,
-    report_text_with_quiet, BADGE_COLUMNS, MIN_COLUMNS,
+    abbreviate, badge, calibration_text, report_json, report_json_with_quiet,
+    report_sarif_with_quiet, report_text, report_text_with_quiet, BADGE_COLUMNS, MIN_COLUMNS,
 };
 
 // ---------------------------------------------------------------------------
@@ -667,6 +667,139 @@ fn the_alert_level_follows_the_worst_unacknowledged_finding() {
     report.findings[1].acknowledged = true;
     let value: serde_json::Value = serde_json::from_str(&report_json(&report)).unwrap();
     assert_eq!(value["alert"], "clear");
+}
+
+// ---------------------------------------------------------------------------
+// SARIF
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_sarif_snapshot_carries_findings_disposition_provenance_and_scan_quality() {
+    let mut strong = finding("a1b2c3", "AWS access key ID", "claude");
+    strong.agent = Some("claude".to_string());
+    strong.cwd = Some(std::path::PathBuf::from("/workspace/example"));
+    strong.foreground_process_name_when_first_seen = Some("cargo".to_string());
+    strong.foreground_process_pid_when_first_seen = Some(4310);
+
+    let mut weak = finding("b2c3d4", "API key assignment", "shell");
+    weak.pattern = "env_assignment".to_string();
+    weak.confidence = Confidence::Weak;
+    weak.preview = "sk-l\u{2026}9ab2".to_string();
+    weak.pane_id = "w0:p2".to_string();
+    weak.line = 7;
+
+    let mut acknowledged = finding("c3d4e5", "Stripe live secret key", "codex");
+    acknowledged.pattern = "stripe_secret_key".to_string();
+    acknowledged.preview = "sk_l\u{2026}7890".to_string();
+    acknowledged.pane_id = "w0:p3".to_string();
+    acknowledged.line = 91;
+    acknowledged.acknowledged = true;
+
+    let report = Report {
+        findings: vec![strong, weak, acknowledged],
+        panes_scanned: 5,
+        panes_skipped: 2,
+        panes_unread: 1,
+        panes_truncated: 3,
+        notes: vec!["pane w0:p4 could not be read".to_string()],
+        generated_at: NOW,
+    };
+    let raw = report_sarif_with_quiet(&report, Some(2_000), 1_000);
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("report_sarif is not JSON");
+
+    assert_eq!(
+        value["$schema"],
+        "https://json.schemastore.org/sarif-2.1.0.json"
+    );
+    assert_eq!(value["version"], "2.1.0");
+    assert_eq!(value["runs"].as_array().map(Vec::len), Some(1));
+
+    let run = &value["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "redact");
+    let rule_ids: Vec<&str> = run["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("driver rules")
+        .iter()
+        .filter_map(|rule| rule["id"].as_str())
+        .collect();
+    assert_eq!(
+        rule_ids,
+        ["aws_access_key_id", "env_assignment", "stripe_secret_key"]
+    );
+
+    let results = run["results"].as_array().expect("SARIF results");
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["ruleId"], "aws_access_key_id");
+    assert_eq!(results[0]["level"], "error");
+    assert_eq!(
+        results[0]["message"]["text"],
+        format!("aws_access_key_id in pane w0:p1: {FAKE_SECRET_PREVIEW}")
+    );
+    assert_eq!(
+        results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "herdr://pane/w0:p1"
+    );
+    assert_eq!(
+        results[0]["locations"][0]["physicalLocation"]["region"]["startLine"],
+        42
+    );
+    assert_eq!(
+        results[0]["partialFingerprints"]["redactFindingId"],
+        report.findings[0].id
+    );
+    assert_eq!(results[0]["properties"]["agent"], "claude");
+    assert_eq!(
+        results[0]["properties"]["workingDirectory"],
+        "/workspace/example"
+    );
+    assert_eq!(
+        results[0]["properties"]["foregroundProcessNameWhenFirstSeen"],
+        "cargo"
+    );
+    assert_eq!(
+        results[0]["properties"]["foregroundProcessPidWhenFirstSeen"],
+        4310
+    );
+
+    assert_eq!(results[1]["level"], "warning");
+    assert_eq!(
+        results[1]["message"]["text"],
+        "env_assignment in pane w0:p2: sk-l\u{2026}9ab2"
+    );
+    assert!(results[1].get("suppressions").is_none());
+    assert_eq!(
+        results[2]["message"]["text"],
+        "stripe_secret_key in pane w0:p3: sk_l\u{2026}7890"
+    );
+    assert_eq!(results[2]["suppressions"][0]["kind"], "external");
+    assert_eq!(results[2]["suppressions"][0]["status"], "accepted");
+
+    let counts = &run["properties"]["counts"];
+    assert_eq!(counts["findings"], 3);
+    assert_eq!(counts["acknowledged"], 1);
+    assert_eq!(counts["panesScanned"], 5);
+    assert_eq!(counts["panesSkipped"], 2);
+    assert_eq!(counts["panesUnread"], 1);
+    assert_eq!(counts["panesTruncated"], 3);
+    assert_eq!(counts["notes"], 1);
+    assert_eq!(run["properties"]["notes"][0], report.notes[0]);
+    assert_eq!(run["properties"]["quiet"]["active"], true);
+    assert_eq!(run["properties"]["quiet"]["remainingSeconds"], 1_000);
+
+    fn has_key(value: &serde_json::Value, wanted: &str) -> bool {
+        match value {
+            serde_json::Value::Array(items) => items.iter().any(|item| has_key(item, wanted)),
+            serde_json::Value::Object(object) => object
+                .iter()
+                .any(|(key, child)| key == wanted || has_key(child, wanted)),
+            _ => false,
+        }
+    }
+    assert!(!has_key(&value, "digest"), "the digest is in the SARIF");
+    assert!(
+        !raw.contains(FAKE_SECRET),
+        "the unmasked value is in the SARIF"
+    );
 }
 
 #[test]

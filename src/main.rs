@@ -17,6 +17,7 @@ Scanning:
   --once              Scan every agent pane once, print the findings, exit
   --calibrate         Report what the active rules would fire on, without badging
   --json              Print the same findings as JSON and exit
+  --sarif             Print the same findings as SARIF 2.1.0 and exit
   --watch             Live findings pane (a acknowledges, s permanently suppresses)
   --rules [PANE|PATH] List active rules for the base, pane, or working directory
                       A context containing `:` is read as a pane id; anything
@@ -112,6 +113,7 @@ fn run(args: &[String]) -> Result<()> {
         "--once" => render::run_once(&config::load_with_args(args)?),
         "--calibrate" => render::run_calibrate(&config::load_with_args(args)?),
         "--json" => render::run_json(&config::load_with_args(args)?),
+        "--sarif" => render::run_sarif(&config::load_with_args(args)?),
         "--watch" => render::run_watch(&config::load_with_args(args)?),
         "--rules" => rules(args, &config::load_with_args(args)?),
         "--explain" => explain(args),
@@ -416,6 +418,7 @@ mod tests {
         assert_eq!(verb_of(&args(&["--json", "--interval", "5"])), "--json");
         assert_eq!(verb_of(&args(&["--interval", "5", "--json"])), "--json");
         assert_eq!(verb_of(&args(&["--interval=5", "--json"])), "--json");
+        assert_eq!(verb_of(&args(&["--lines", "800", "--sarif"])), "--sarif");
         assert_eq!(verb_of(&args(&["--lines", "800", "--watch"])), "--watch");
         assert_eq!(verb_of(&args(&["--all-panes", "--watch"])), "--watch");
         assert_eq!(verb_of(&args(&["--rules=/work/company"])), "--rules");

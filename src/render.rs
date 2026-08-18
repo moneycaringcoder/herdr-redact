@@ -914,6 +914,158 @@ pub fn report_json_with_quiet(report: &Report, quiet_until: Option<u64>, now: u6
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
+/// SARIF 2.1.0 snapshot, with the same masking as every other renderer.
+///
+/// A result's fingerprint is the public finding id, never the store digest.
+/// Acknowledged findings remain in the run because the value is still present
+/// in pane scrollback; SARIF suppression metadata records their disposition.
+pub fn report_sarif(report: &Report) -> String {
+    report_sarif_with_quiet(report, daemon::quiet_until(), crate::model::now())
+}
+
+pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u64) -> String {
+    let mut rule_metadata = BTreeMap::new();
+    for finding in &report.findings {
+        rule_metadata
+            .entry(finding.pattern.as_str())
+            .or_insert((finding.label.as_str(), finding.confidence));
+    }
+    let rules: Vec<serde_json::Value> = rule_metadata
+        .into_iter()
+        .map(|(name, (label, confidence))| {
+            json!({
+                "id": name,
+                "name": name,
+                "shortDescription": {
+                    "text": label,
+                },
+                "properties": {
+                    "confidence": confidence.as_str(),
+                },
+            })
+        })
+        .collect();
+
+    let results: Vec<serde_json::Value> = report
+        .findings
+        .iter()
+        .map(|finding| {
+            let mut properties = serde_json::Map::new();
+            if let Some(agent) = &finding.agent {
+                properties.insert("agent".to_string(), json!(agent));
+            }
+            if let Some(cwd) = &finding.cwd {
+                properties.insert(
+                    "workingDirectory".to_string(),
+                    json!(cwd.display().to_string()),
+                );
+            }
+            if let Some(name) = &finding.foreground_process_name_when_first_seen {
+                properties.insert(
+                    "foregroundProcessNameWhenFirstSeen".to_string(),
+                    json!(name),
+                );
+            }
+            if let Some(pid) = finding.foreground_process_pid_when_first_seen {
+                properties.insert("foregroundProcessPidWhenFirstSeen".to_string(), json!(pid));
+            }
+
+            let level = match finding.confidence {
+                Confidence::Strong => "error",
+                Confidence::Weak => "warning",
+            };
+            let mut result = json!({
+                "ruleId": finding.pattern,
+                "level": level,
+                "message": {
+                    "text": format!(
+                        "{} in pane {}: {}",
+                        finding.pattern, finding.pane_id, finding.preview
+                    ),
+                },
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": format!("herdr://pane/{}", finding.pane_id),
+                        },
+                        "region": {
+                            "startLine": finding.line,
+                        },
+                    },
+                }],
+                "partialFingerprints": {
+                    "redactFindingId": finding.id,
+                },
+                "properties": properties,
+            });
+            if finding.acknowledged {
+                result
+                    .as_object_mut()
+                    .expect("SARIF result is an object")
+                    .insert(
+                        "suppressions".to_string(),
+                        json!([{
+                            "kind": "external",
+                            "status": "accepted",
+                            "justification": "Acknowledged in redact",
+                        }]),
+                    );
+            }
+            result
+        })
+        .collect();
+
+    let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
+    let quiet_remaining = quiet_until.map(|until| until.saturating_sub(now));
+    let suppressions = active_suppression_count(report);
+    let notes: Vec<&String> = report
+        .notes
+        .iter()
+        .filter(|note| !is_suppression_note(note))
+        .collect();
+    let value = json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": env!("CARGO_PKG_NAME"),
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "rules": rules,
+                },
+            },
+            "results": results,
+            // SARIF's run property bag is its extension point for run-wide data
+            // that has no standard field. Keeping scan counters and notes here
+            // lets a consumer distinguish a clean empty run from one that could
+            // not read its panes without manufacturing a fake result.
+            "properties": {
+                "generatedAtUnixSeconds": report.generated_at,
+                "counts": {
+                    "findings": report.findings.len(),
+                    "unacknowledged": report.findings.len() - acknowledged,
+                    "acknowledged": acknowledged,
+                    "suppressions": suppressions,
+                    "panesScanned": report.panes_scanned,
+                    "panesSkipped": report.panes_skipped,
+                    "panesUnread": report.panes_unread,
+                    "panesTruncated": report.panes_truncated,
+                    "notes": notes.len(),
+                },
+                "notes": notes,
+                "quiet": {
+                    "active": quiet_until.is_some(),
+                    "until": quiet_until,
+                    "remainingSeconds": quiet_remaining,
+                    "findingsStillCollected": quiet_until.is_some(),
+                },
+            },
+        }],
+    });
+
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
 fn alert_name(alert: Alert) -> &'static str {
     match alert {
         Alert::Clear => "clear",
@@ -1071,6 +1223,12 @@ pub fn run_once(config: &Config) -> Result<()> {
 pub fn run_json(config: &Config) -> Result<()> {
     let report = daemon::scan_once(config)?;
     println!("{}", report_json(&report));
+    Ok(())
+}
+
+pub fn run_sarif(config: &Config) -> Result<()> {
+    let report = daemon::scan_once(config)?;
+    println!("{}", report_sarif(&report));
     Ok(())
 }
 

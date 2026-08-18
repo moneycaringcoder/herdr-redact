@@ -68,6 +68,13 @@ contexts = ["global", "workspace"]
 command = ["./target/release/redact", "--json"]
 
 [[actions]]
+id = "sarif"
+title = "Redact: SARIF snapshot"
+description = "SARIF 2.1.0 findings for security review. Contains no secret values."
+contexts = ["global", "workspace"]
+command = ["./target/release/redact", "--sarif"]
+
+[[actions]]
 id = "rules"
 title = "Redact: list detection rules"
 description = "The rules that are actually active, built-in and user-supplied."
