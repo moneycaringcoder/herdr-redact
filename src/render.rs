@@ -967,7 +967,7 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
     let rules: Vec<serde_json::Value> = rule_metadata
         .into_iter()
         .map(|(name, (label, confidence))| {
-            json!({
+            let mut rule = json!({
                 "id": name,
                 "name": name,
                 "shortDescription": {
@@ -976,7 +976,16 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
                 "properties": {
                     "confidence": confidence.as_str(),
                 },
-            })
+            });
+            // An exempt rule has no provider page to point at, and SARIF's
+            // `helpUri` is a URI: an empty string would be a worse answer than
+            // no key at all.
+            if let Some(url) = rotation_url(name) {
+                rule.as_object_mut()
+                    .expect("SARIF rule is an object")
+                    .insert("helpUri".to_string(), json!(url));
+            }
+            rule
         })
         .collect();
 
