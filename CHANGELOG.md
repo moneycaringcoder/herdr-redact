@@ -60,23 +60,17 @@ at least one minor cycle.
   reports under `jwt`, and a Postgres or MySQL URL carrying a password reports
   under `url_credentials` at weak confidence. A second rule for either would
   double-report one credential and give the allowlist two names to silence.
-- `redact --calibrate`, which runs the active rule set over your own pane output
-  and reports what it *would* have fired on, badging nothing and acknowledging
-  nothing. Precision is what this plugin sells, and precision is measurable;
-  measuring it against your own terminal before trusting it is a better argument
-  than anything in this README. It writes nothing at all — not a finding, not the
-  digest key, not even the state directory, because it never constructs the store
-  in the first place. `--all-panes` is worth pairing with it: the noisiest surface
-  is the one worth measuring.
-- `redact --explain <rule>`, which prints why a detection rule is shaped the way
-  it is: what it matches structurally, at what confidence, and what near-misses
-  it deliberately refuses. That reasoning was only in the README, and it is most
-  useful at the moment a rule fires or fails to. An unknown name lists the rules
-  whose names are close and exits non-zero; a name from your own `patterns` says
-  so rather than pretending to a built-in explanation. The explanations live
-  beside the rules in `src/scan.rs`, and a test asserts the README's rule table
-  and the compiled rule set still name the same rules at the same confidences,
-  so the table cannot drift from the code.
+- Named, versioned rule packs. Every rule now belongs to a pack, `rule_packs`
+  selects which are active, and `--rules` prints the pack and version beside
+  each rule so you can see the detection surface you are actually running.
+  Packs are compiled in — nothing is fetched, and no rule is ever renamed by
+  one. Every shipped rule stays in `default`, unchanged in name, confidence and
+  order, and a golden test now pins that list so it cannot drift. The second
+  pack, `narrow`, ships empty on purpose: demoting a rule that people are
+  already protected by would weaken them silently, so it stands as the seam for
+  precise formats too specialised for everyone. Packs only ever add rules, an
+  unknown pack name is a note rather than a dead scanner, and an empty
+  `rule_packs` list means the default set rather than nothing at all.
 
 ### Changed
 

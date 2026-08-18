@@ -79,6 +79,34 @@ const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
 /// Extra check on a match that the regex engine cannot express.
 type Check = fn(&Captures<'_>) -> bool;
+/// A compiled-in group of detection rules. Names and versions are public
+/// interface: a pack may gain rules in a later version, but existing rule names
+/// never change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RulePack {
+    pub name: &'static str,
+    pub version: u32,
+}
+
+pub const DEFAULT_RULE_PACK: RulePack = RulePack {
+    name: "default",
+    version: 1,
+};
+
+/// Reserved for precise formats whose relevance is too narrow for every user.
+///
+/// It is intentionally empty today: no shipped rule was demoted from the
+/// default pack, so enabling packs cannot weaken existing protection.
+pub const NARROW_RULE_PACK: RulePack = RulePack {
+    name: "narrow",
+    version: 1,
+};
+
+const RULE_PACKS: [RulePack; 2] = [DEFAULT_RULE_PACK, NARROW_RULE_PACK];
+
+pub fn rule_packs() -> &'static [RulePack] {
+    &RULE_PACKS
+}
 
 /// One compiled rule.
 #[derive(Debug)]
@@ -87,6 +115,7 @@ struct Rule {
     label: String,
     confidence: Confidence,
     explain: &'static str,
+    pack: Option<RulePack>,
     regex: Regex,
     /// Capture groups holding the value, most specific first; the first one that
     /// participated in the match wins. `[0]` means "the whole match".
@@ -117,6 +146,7 @@ impl Rule {
             label: label.to_string(),
             confidence,
             explain,
+            pack: Some(DEFAULT_RULE_PACK),
             regex: Regex::new(pattern).expect("built-in pattern is valid"),
             groups: vec![0],
             standalone: false,
@@ -167,6 +197,9 @@ pub struct Explanation {
 pub struct Rules {
     /// Reported by `--rules` so a user can see what is actually active.
     pub names: Vec<(String, Confidence)>,
+    /// Pack metadata aligned one-for-one with [`Self::names`]. Custom patterns
+    /// have no compiled-in pack.
+    pub packs: Vec<Option<RulePack>>,
     /// Things the caller should tell the user about the rule set itself, such as
     /// a configuration flag that does nothing. Never contains a value.
     pub notes: Vec<String>,
@@ -182,8 +215,12 @@ impl Rules {
     /// protecting them. Callers that must keep running (the daemon) fall back to
     /// [`Rules::builtin`] and say so.
     pub fn compile(config: &Config) -> Result<Self> {
-        let mut rules = builtin_rules(config.env_assignments);
-
+        // `notes` starts life here because pack selection is the first thing
+        // that can have something to say: an unknown pack name is reported and
+        // ignored rather than failing, so a typo narrows the rule set in the
+        // open rather than in silence.
+        let (enabled_packs, notes) = selected_rule_packs(&config.rule_packs);
+        let mut rules = builtin_rules(config.env_assignments, &enabled_packs);
         for pattern in &config.patterns {
             let name = pattern.name.trim();
             if name.is_empty() {
@@ -208,6 +245,7 @@ impl Rules {
                     Confidence::Weak
                 },
                 explain: "This rule comes from the user's `patterns` configuration and has no built-in reasoning.",
+                pack: None,
                 regex,
                 groups: vec![0],
                 standalone: false,
@@ -223,22 +261,24 @@ impl Rules {
             );
         }
 
-        // The channel for what a rule set could not do; empty when there is nothing to report.
-        let notes = Vec::new();
+        let (names, packs) = names_and_packs_of(&rules);
 
         Ok(Self {
-            names: names_of(&rules),
+            names,
+            packs,
             notes,
             rules,
             allowlist,
         })
     }
 
-    /// The built-in rules alone, with no user configuration. Cannot fail.
+    /// The default built-in pack alone, with no user configuration. Cannot fail.
     pub fn builtin() -> Self {
-        let rules = builtin_rules(true);
+        let rules = builtin_rules(true, &[DEFAULT_RULE_PACK]);
+        let (names, packs) = names_and_packs_of(&rules);
         Self {
-            names: names_of(&rules),
+            names,
+            packs,
             notes: Vec::new(),
             rules,
             allowlist: Vec::new(),
@@ -291,15 +331,39 @@ fn user_regex(pattern: &str) -> std::result::Result<Regex, regex::Error> {
         .build()
 }
 
-/// Rule names in declaration order, built-ins first, one entry per machine name.
-fn names_of(rules: &[Rule]) -> Vec<(String, Confidence)> {
-    let mut names: Vec<(String, Confidence)> = Vec::with_capacity(rules.len());
+/// Rule names and pack metadata in declaration order, built-ins first, one
+/// entry per machine name.
+fn names_and_packs_of(rules: &[Rule]) -> (Vec<(String, Confidence)>, Vec<Option<RulePack>>) {
+    let mut names = Vec::with_capacity(rules.len());
+    let mut packs = Vec::with_capacity(rules.len());
     for rule in rules {
-        if !names.iter().any(|(name, _)| name == &rule.name) {
+        if !names
+            .iter()
+            .any(|(name, _): &(String, Confidence)| name == &rule.name)
+        {
             names.push((rule.name.clone(), rule.confidence));
+            packs.push(rule.pack);
         }
     }
-    names
+    (names, packs)
+}
+
+fn selected_rule_packs(requested: &[String]) -> (Vec<RulePack>, Vec<String>) {
+    // The default pack is an invariant, not an opt-in. An empty list therefore
+    // means "default only", never "scan nothing".
+    let mut enabled = vec![DEFAULT_RULE_PACK];
+    let mut notes = Vec::new();
+    for requested_name in requested {
+        let requested_name = requested_name.trim();
+        match RULE_PACKS.iter().find(|pack| pack.name == requested_name) {
+            Some(pack) if !enabled.contains(pack) => enabled.push(*pack),
+            Some(_) => {}
+            None => notes.push(format!(
+                "unknown rule pack `{requested_name}` ignored; the default pack remains active"
+            )),
+        }
+    }
+    (enabled, notes)
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +382,7 @@ fn names_of(rules: &[Rule]) -> Vec<(String, Confidence)> {
 ///   auth token is 32 bare hex characters, indistinguishable from a git blob id.
 /// * Cloudflare API tokens — 40 characters of `[A-Za-z0-9_-]` with no prefix.
 /// * Generic 32/40-character hex or base64 "keys" with no context.
-fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
+fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule> {
     let mut rules = vec![
         // AWS access key IDs are base32, so the tail is uppercase alphanumeric.
         // `check` rejects a run of a single character, which is what a redacted
@@ -606,6 +670,7 @@ fn builtin_rules(env_assignments: bool) -> Vec<Rule> {
         );
     }
 
+    rules.retain(|rule| rule.pack.is_some_and(|pack| enabled_packs.contains(&pack)));
     rules
 }
 
