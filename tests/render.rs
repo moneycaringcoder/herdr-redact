@@ -17,8 +17,10 @@
 //! `no_rendering_contains_the_secret` can assert its absence from every string
 //! this module can produce. Nothing here may ever hold a real one.
 
-use redact::model::{Alert, Confidence, Finding, Report};
-use redact::render::{abbreviate, badge, report_json, report_text, BADGE_COLUMNS, MIN_COLUMNS};
+use redact::model::{Alert, Calibration, CalibrationHit, Confidence, Finding, Match, Report};
+use redact::render::{
+    abbreviate, badge, calibration_text, report_json, report_text, BADGE_COLUMNS, MIN_COLUMNS,
+};
 
 // ---------------------------------------------------------------------------
 // Test-local display width
@@ -679,4 +681,138 @@ fn every_read_failing_is_not_reported_as_an_empty_session() {
         "the genuinely empty session lost its own message:\n{empty}"
     );
     assert_ne!(failed, empty);
+}
+
+// ---------------------------------------------------------------------------
+// Calibration
+// ---------------------------------------------------------------------------
+
+fn calibration_hit(
+    pattern: &str,
+    confidence: Confidence,
+    preview: &str,
+    pane_id: &str,
+) -> CalibrationHit {
+    CalibrationHit {
+        pane_id: pane_id.to_string(),
+        pane_label: pane_id.to_string(),
+        workspace_id: "w0".to_string(),
+        matched: Match {
+            pattern: pattern.to_string(),
+            label: pattern.replace('_', " "),
+            confidence,
+            preview: preview.to_string(),
+            value_len: 20,
+            line: 12,
+            digest: 3_735_928_559,
+        },
+    }
+}
+
+#[test]
+fn a_clean_calibration_says_nothing_would_have_fired() {
+    let calibration = Calibration {
+        panes_scanned: 4,
+        generated_at: NOW,
+        ..Calibration::default()
+    };
+
+    let text = calibration_text(&calibration, 80);
+    assert_eq!(
+        text,
+        "redact \u{b7} calibration\n\n0 matches would have fired across 4 panes scanned.\n"
+    );
+}
+
+#[test]
+fn a_calibration_with_several_rules_groups_and_sorts_its_hits() {
+    let calibration = Calibration {
+        hits: vec![
+            calibration_hit(
+                "aws_access_key_id",
+                Confidence::Strong,
+                FAKE_SECRET_PREVIEW,
+                "w0:p1",
+            ),
+            calibration_hit(
+                "github_token",
+                Confidence::Strong,
+                "ghp_\u{2026}LE01",
+                "w0:p3",
+            ),
+            calibration_hit(
+                "aws_access_key_id",
+                Confidence::Strong,
+                FAKE_SECRET_PREVIEW,
+                "w0:p1",
+            ),
+            calibration_hit(
+                "aws_access_key_id",
+                Confidence::Strong,
+                "ASIA\u{2026}MPLE",
+                "w0:p2",
+            ),
+        ],
+        panes_scanned: 3,
+        generated_at: NOW,
+        ..Calibration::default()
+    };
+
+    let text = calibration_text(&calibration, 80);
+    let flat = flatten(&text);
+    assert!(
+        flat.contains("4 matches would have fired across 3 panes scanned"),
+        "{text}"
+    );
+    assert!(text.contains("rule"), "{text}");
+    assert!(text.contains("confidence"), "{text}");
+    assert!(text.contains("masked sample"), "{text}");
+    let aws = text.find("aws_access_key_id").expect("AWS rule missing");
+    let github = text.find("github_token").expect("GitHub rule missing");
+    assert!(aws < github, "the higher-count rule was not first:\n{text}");
+    let aws_line = text
+        .lines()
+        .find(|line| line.contains("aws_access_key_id"))
+        .unwrap();
+    assert!(aws_line.contains('3'), "{aws_line}");
+    assert!(aws_line.contains('2'), "{aws_line}");
+    assert!(aws_line.contains(FAKE_SECRET_PREVIEW), "{aws_line}");
+    assert!(
+        !text.contains("3735928559"),
+        "a digest was rendered:\n{text}"
+    );
+    assert!(
+        !text.contains(FAKE_SECRET),
+        "a raw value was rendered:\n{text}"
+    );
+
+    for width in WIDTHS {
+        let text = calibration_text(&calibration, width);
+        assert!(
+            widest(&text) <= width.max(MIN_COLUMNS),
+            "calibration overflowed at width {width}:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn a_calibration_that_ran_out_of_budget_is_incomplete_not_clean() {
+    let note = "2 pane(s) were not read before this calibration's 30s budget ran out; calibration \
+                has no later cycle, so this result is incomplete";
+    let calibration = Calibration {
+        panes_scanned: 1,
+        panes_unread: 2,
+        notes: vec![note.to_string()],
+        generated_at: NOW,
+        ..Calibration::default()
+    };
+
+    let text = calibration_text(&calibration, 80);
+    let flat = flatten(&text);
+    assert!(flat.contains("0 matches were observed"), "{text}");
+    assert!(flat.contains("did not complete cleanly"), "{text}");
+    assert!(flat.contains("This is not a clean result"), "{text}");
+    assert!(flat.contains("2 panes could not be read at all"), "{text}");
+    assert!(!flat.contains("0 matches would have fired"), "{text}");
+    assert!(flat.contains(note), "{text}");
 }

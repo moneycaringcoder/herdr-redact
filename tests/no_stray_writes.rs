@@ -21,7 +21,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -43,13 +43,14 @@ struct TestServer {
     path: PathBuf,
     dir: PathBuf,
     stop: Arc<AtomicBool>,
+    methods: Arc<Mutex<Vec<String>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl TestServer {
-    /// Answers `session.snapshot` and `pane.read` from the fixtures and every
-    /// mutation with `ok`, for as many connections as the run happens to make.
-    /// Counting badge pushes is not what this test is about.
+    /// Answers `session.snapshot` and `pane.read` from the fixtures and records
+    /// every request method. Mutations receive `ok` so an unexpected write is
+    /// observable without derailing the caller before the assertion.
     fn start() -> Self {
         let dir = std::env::temp_dir().join(format!("redact-writes-sock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -60,9 +61,11 @@ impl TestServer {
         let listener = UnixListener::bind(&path).expect("bind");
         listener.set_nonblocking(true).expect("nonblocking");
         let stop = Arc::new(AtomicBool::new(false));
+        let methods = Arc::new(Mutex::new(Vec::new()));
 
         let thread = {
             let stop = Arc::clone(&stop);
+            let methods = Arc::clone(&methods);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
@@ -74,7 +77,9 @@ impl TestServer {
                             }
                             let request: Value =
                                 serde_json::from_str(line.trim_end()).expect("request is JSON");
-                            let body = reply_to(request["method"].as_str().unwrap_or_default());
+                            let method = request["method"].as_str().unwrap_or_default().to_string();
+                            methods.lock().expect("methods lock").push(method.clone());
+                            let body = reply_to(&method);
                             let mut stream = &stream;
                             let _ = stream.write_all(body.as_bytes());
                             let _ = stream.write_all(b"\n");
@@ -97,7 +102,12 @@ impl TestServer {
             dir,
             stop,
             thread: Some(thread),
+            methods,
         }
+    }
+
+    fn methods(&self) -> Vec<String> {
+        self.methods.lock().expect("methods lock").clone()
     }
 }
 
@@ -136,6 +146,7 @@ fn reply_to(method: &str) -> String {
 struct Stamp {
     hash: u64,
     len: u64,
+    is_dir: bool,
 }
 
 fn hash_of(bytes: &[u8]) -> u64 {
@@ -152,7 +163,17 @@ fn walk(root: &Path, out: &mut BTreeMap<PathBuf, Stamp>) {
     for entry in entries.flatten() {
         let path = entry.path();
         match entry.file_type() {
-            Ok(t) if t.is_dir() => walk(&path, out),
+            Ok(t) if t.is_dir() => {
+                out.insert(
+                    path.clone(),
+                    Stamp {
+                        hash: 0,
+                        len: 0,
+                        is_dir: true,
+                    },
+                );
+                walk(&path, out);
+            }
             Ok(_) => {
                 let bytes = std::fs::read(&path).unwrap_or_default();
                 out.insert(
@@ -160,6 +181,7 @@ fn walk(root: &Path, out: &mut BTreeMap<PathBuf, Stamp>) {
                     Stamp {
                         hash: hash_of(&bytes),
                         len: bytes.len() as u64,
+                        is_dir: false,
                     },
                 );
             }
@@ -196,8 +218,11 @@ fn changed(before: &BTreeMap<PathBuf, Stamp>, after: &BTreeMap<PathBuf, Stamp>) 
 // The test
 // ---------------------------------------------------------------------------
 
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn a_full_scan_writes_nothing_outside_the_state_directory() {
+    let _guard = TEST_LOCK.lock().expect("test lock");
     let home = std::env::temp_dir().join(format!("redact-writes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let state = home.join("state");
@@ -265,6 +290,79 @@ fn a_full_scan_writes_nothing_outside_the_state_directory() {
         written.iter().any(|path| path.starts_with(&state)),
         "the store persisted nothing at all: {written:?}"
     );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn calibrating_writes_nothing_at_all() {
+    let _guard = TEST_LOCK.lock().expect("test lock");
+    let home = std::env::temp_dir().join(format!("redact-calibrate-writes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let state = home.join("state");
+    let config_dir = home.join("config");
+    let workdir = home.join("work");
+    for dir in [&config_dir, &workdir] {
+        std::fs::create_dir_all(dir).expect("sandbox");
+    }
+    std::fs::write(workdir.join("Cargo.toml"), b"[package]\n").expect("work file");
+    std::fs::write(workdir.join(".env"), b"AWS_SECRET_ACCESS_KEY=nope\n").expect("work file");
+    std::fs::write(config_dir.join("config.json"), b"{\"lines\": 200}\n").expect("config");
+
+    let server = TestServer::start();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+    std::env::set_var("XDG_CONFIG_HOME", home.join("xdg-config"));
+    std::env::set_var("HERDR_PLUGIN_STATE_DIR", &state);
+    std::env::set_var("HERDR_PLUGIN_CONFIG_DIR", &config_dir);
+    std::env::set_var("HERDR_SOCKET_PATH", &server.path);
+    std::env::set_var("HERDR_PLUGIN_ID", "test.redact");
+    std::env::remove_var("HERDR_PANE_ID");
+
+    let before = fingerprint(&home);
+    assert!(
+        !state.exists(),
+        "the state directory existed before calibration"
+    );
+
+    let config = redact::config::load().expect("config");
+    let calibration = redact::daemon::calibrate(&config).expect("calibration");
+    assert!(
+        !calibration.hits.is_empty(),
+        "calibration found nothing, so this proves nothing. notes: {:?}",
+        calibration.notes
+    );
+    assert!(
+        calibration.panes_scanned > 0,
+        "no pane was read: {:?}",
+        calibration.notes
+    );
+
+    let after = fingerprint(&home);
+    let written = changed(&before, &after);
+    assert!(
+        written.is_empty(),
+        "calibration changed the sandboxed HOME, including plugin state: {written:?}"
+    );
+    assert!(
+        !state.exists(),
+        "calibration created the plugin state directory"
+    );
+
+    let methods = server.methods();
+    assert!(methods.iter().any(|method| method == "session.snapshot"));
+    assert!(methods.iter().any(|method| method == "pane.read"));
+    for forbidden in [
+        "pane.report_metadata",
+        "workspace.report_metadata",
+        "notification.show",
+    ] {
+        assert!(
+            !methods.iter().any(|method| method == forbidden),
+            "calibration sent {forbidden}: {methods:?}"
+        );
+    }
 
     drop(server);
     let _ = std::fs::remove_dir_all(&home);
