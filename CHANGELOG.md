@@ -77,6 +77,19 @@ at least one minor cycle.
   beside the rules in `src/scan.rs`, and a test asserts the README's rule table
   and the compiled rule set still name the same rules at the same confidences,
   so the table cannot drift from the code.
+- Permanent suppression of one exact value, from the findings pane with `s` or
+  from the command line with `--suppress <ID>`, plus `--suppressions` to list
+  what you have silenced. Silencing a false positive used to mean hand-writing a
+  regex into a config file, and a hand-written allowlist regex that matches more
+  than you intended is a silent hole in a security tool. A suppression cannot
+  over-match at all: it is the rule name plus the keyed digest, so it matches
+  exactly one value and nothing else — and because the plugin never has the
+  value, there was never a regex it could have written for you. It is global
+  across panes, since the same fixture value in another pane is the same false
+  positive. The count of active suppressions is always on screen and in
+  `--json`, including when there are no findings at all, because a scanner that
+  has been told to ignore things must never be quiet about it. `--forget` clears
+  them.
 
 ### Changed
 
