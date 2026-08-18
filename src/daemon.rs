@@ -307,7 +307,15 @@ pub fn scan_cycle_within(
         cursor = (index + 1) % readable.len();
         let effective_owned = (!config.overlays.is_empty()).then(|| config.effective_for(pane));
         let effective = effective_owned.as_ref().unwrap_or(config);
-        let lines = effective.lines;
+        // Backfill depth is a scalar like any other, so an overlay may set it:
+        // a repository whose panes hold a long history can ask for a deeper
+        // first read without changing what every other workspace does.
+        let backfill = effective.backfill_lines > 0 && store.needs_backfill(&pane.pane_id);
+        let lines = if backfill {
+            effective.backfill_lines
+        } else {
+            effective.lines
+        };
         let rules = if let Some(rules) = rule_sets.get(effective) {
             rules
         } else {
@@ -339,15 +347,31 @@ pub fn scan_cycle_within(
                 continue;
             }
         };
+        // Marked only now the read has come back. Claiming it before the call
+        // would spend the pane's one deep read on a transport error or a pane
+        // that closed under us: that pane would be treated as backfilled for the
+        // life of the process, its scrollback would never be scanned, and the
+        // blind spot would render as a permanently clean pane.
+        if backfill {
+            store.mark_backfilled(&pane.pane_id);
+        }
 
         scanned += 1;
         if text.truncated {
-            truncated += 1;
-            notes.push(format!(
-                "pane {} had more output than the {}-line budget; anything above it was not \
-                 scanned",
-                pane.pane_id, lines
-            ));
+            if backfill {
+                notes.push(format!(
+                    "pane {} startup backfill was truncated at its {}-line history budget; older \
+                     scrollback was not scanned",
+                    pane.pane_id, lines
+                ));
+            } else {
+                truncated += 1;
+                notes.push(format!(
+                    "pane {} had more output than the {}-line budget; anything above it was not \
+                     scanned",
+                    pane.pane_id, lines
+                ));
+            }
         }
 
         // Trap 3: `PaneReadResult.revision` is always zero on the wire, so
@@ -398,10 +422,15 @@ pub fn scan_cycle_within(
 }
 
 /// One cycle over a fresh connection, for `--once` and `--json`.
+///
+/// These interactive verbs use the ordinary window rather than making the user
+/// wait for the watcher's startup scrollback backfill.
 pub fn scan_once(config: &Config) -> Result<Report> {
     let mut client = Herdr::connect()?;
     let mut store = Store::load(config);
-    let report = scan_cycle(&mut client, config, &mut store)?;
+    let mut one_shot = config.clone();
+    one_shot.backfill_lines = 0;
+    let report = scan_cycle(&mut client, &one_shot, &mut store)?;
     store.save()?;
     Ok(report)
 }

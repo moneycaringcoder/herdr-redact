@@ -351,6 +351,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | --- | --- | --- |
 | `interval_seconds` | `5` | How often the watcher and the findings pane rescan. Clamped to 1–3600. `--interval <SECS>` overrides it for one run. |
 | `lines` | `400` | Lines of output read per pane per cycle. Clamped to 1–20000. Bigger means more history and more to scan. `--lines <N>` overrides it for one run. |
+| `backfill_lines` | `5000` | Lines of retained scrollback requested the first time the watcher reads each pane. Clamped to 1–20000; `0` disables backfill. `--once` and `--json` never backfill, because they are interactive commands whose latency you are waiting on. |
 | `scan_all_panes` | `false` | Scan every pane rather than only panes running an agent. See [widening the scan](#widening-the-scan). `--all-panes` overrides it for one run. |
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
 | `notify` | `true` | Post a herdr toast for a new finding. Rate limited to one per rule per pane per watcher run regardless. |
@@ -607,9 +608,12 @@ Worth knowing before you trust it:
 
 - **It polls.** Panes are read on the refresh interval and not before, so a five-second badge is a
   five-second-old badge.
-- **It sees a window, not history.** Each cycle reads the most recent `lines` lines of each pane, so
-  something that scrolled far past before you enabled the watcher is not found. Where herdr had more
-  output than the budget allowed, the report says so rather than implying it saw everything.
+- **It sees retained scrollback, not unlimited history.** The first time the watcher reaches each pane
+  it requests `backfill_lines`; later cycles request the most recent `lines` lines. herdr may retain
+  less than requested, and the report says when either window was truncated rather than implying it
+  saw everything. The first cycle after `--enable` is therefore more expensive, and the first badge
+  may arrive later on a large session; the cycle deadline can spread panes' first deep reads over
+  later cycles.
 - **Only agent panes, by default.** See [widening the scan](#widening-the-scan).
 - **Acknowledgement is not remediation.** Acknowledging a finding clears a badge. The value is still
   in that pane's scrollback, and still in whatever wrote it there. Rotate the key.
