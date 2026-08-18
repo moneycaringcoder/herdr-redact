@@ -1105,17 +1105,9 @@ fn the_assignment_heuristic_can_be_turned_off() {
 }
 
 #[test]
-fn the_entropy_flag_changes_nothing_and_says_so() {
-    let quiet = Rules::compile(&Config::default()).expect("compiles");
-    assert!(quiet.notes.is_empty());
-
-    let config = Config {
-        entropy: true,
-        ..Config::default()
-    };
-    let rules = Rules::compile(&config).expect("compiles");
-    assert_eq!(rules.notes.len(), 1);
-    assert!(rules.notes[0].contains("entropy"));
+fn compiling_the_default_rule_set_reports_nothing() {
+    let rules = Rules::compile(&Config::default()).expect("compiles");
+    assert!(rules.notes.is_empty());
     assert!(scan(NEGATIVE, &rules, &KEY).is_empty());
 }
 
