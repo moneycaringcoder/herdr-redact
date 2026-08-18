@@ -135,8 +135,16 @@ fn rules(config: &config::Config) -> Result<()> {
         println!("redact: no rules are active.");
         return Ok(());
     }
-    for (name, confidence) in &rules.names {
-        println!("{name}\t{}", confidence.as_str());
+    for ((name, confidence), pack) in rules.names.iter().zip(&rules.packs) {
+        match pack {
+            Some(pack) => println!(
+                "{name}\t{}\t{}\t{}",
+                confidence.as_str(),
+                pack.name,
+                pack.version
+            ),
+            None => println!("{name}\t{}\t-\t-", confidence.as_str()),
+        }
     }
     // A note here usually means a setting the user believes is doing something
     // and is not. Printing it on the rule listing is where they will look.
