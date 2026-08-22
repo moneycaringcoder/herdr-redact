@@ -24,6 +24,14 @@ regex = "1"
 # breaks the promise that no rendered line exceeds the width it was given.
 unicode-width = "0.2.2"
 
+# The schema oracle needs `regex` to honor JSON Schema's `pattern` keyword. It
+# is already a runtime dependency, so naming it here adds no package to the
+# lockfile. A schema-validation crate was rejected: even the smallest candidate
+# tripled the package count, adding 45 crates including the ICU stack, for a
+# test-only oracle.
+[dev-dependencies]
+regex = "1"
+
 # Unix-only: setsid for daemon detachment, and SIGINT/SIGTERM shutdown plumbing.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

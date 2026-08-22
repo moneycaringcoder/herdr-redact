@@ -119,8 +119,7 @@ fn assert_clean(what: &str, text: &str) {
     for needle in forbidden() {
         assert!(
             !text.contains(&needle),
-            "{what} leaked {:?}\n--- offending output ---\n{text}",
-            needle
+            "{what} leaked {needle:?}\n--- offending output ---\n{text}"
         );
     }
 }

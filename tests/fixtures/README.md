@@ -16,6 +16,12 @@ while reporting success.
 | `session_snapshot.json` | `session.snapshot` | a live 10-pane session, trimmed to four representative panes |
 | `pane_read.json` | `pane.read` | a live pane, body replaced with synthetic build output |
 | `pane_process_info.json` | `pane.process_info` | a live pane running `curl` |
+| `sarif-2.1.0.json` | SARIF output validation | SchemaStore's draft-07 rendering of the OASIS SARIF 2.1.0 errata01 schema |
+
+`sarif-2.1.0.json` is the exact document our output's `$schema` field points at,
+retrieved from SchemaStore on 2026-08-22. Its SHA-256 is
+`7c9688f0a1c4a4e1649ecc78521087e664729c1dff56ee8212ff195c7b16132a`; it is
+vendored so the test suite validates offline rather than trusting the network.
 
 `session_snapshot.json` deliberately keeps one pane (`w0:p1`) with **no `agent`
 key at all**, because that absence is the default scan filter, and two panes in

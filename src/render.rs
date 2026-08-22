@@ -1017,6 +1017,27 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
                 Confidence::Strong => "error",
                 Confidence::Weak => "warning",
             };
+            // A stored finding written before line tracking existed deserializes
+            // the absent field as zero, and SARIF requires a region's startLine
+            // to be at least one. SARIF permits a physical location with no
+            // region at all, which preserves that lack of knowledge instead of
+            // inventing a line nobody observed.
+            let mut physical_location = json!({
+                "artifactLocation": {
+                    "uri": format!("herdr://pane/{}", finding.pane_id),
+                },
+            });
+            if finding.line != 0 {
+                physical_location
+                    .as_object_mut()
+                    .expect("SARIF physical location is an object")
+                    .insert(
+                        "region".to_string(),
+                        json!({
+                            "startLine": finding.line,
+                        }),
+                    );
+            }
             let mut result = json!({
                 "ruleId": finding.pattern,
                 "level": level,
@@ -1027,14 +1048,7 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
                     ),
                 },
                 "locations": [{
-                    "physicalLocation": {
-                        "artifactLocation": {
-                            "uri": format!("herdr://pane/{}", finding.pane_id),
-                        },
-                        "region": {
-                            "startLine": finding.line,
-                        },
-                    },
+                    "physicalLocation": physical_location,
                 }],
                 "partialFingerprints": {
                     "redactFindingId": finding.id,
