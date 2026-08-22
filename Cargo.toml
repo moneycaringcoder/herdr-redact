@@ -1,6 +1,6 @@
 [package]
 name = "redact"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Warns when an agent pane has printed a credential, before you screenshot or paste it."
 license = "MIT"
