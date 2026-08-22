@@ -81,6 +81,15 @@ take over a second for one of them. When the budget runs out the cycle stops, sa
 did not reach, and the next cycle **starts where this one stopped** — so a session larger than one
 budget is still covered in full, just over several cycles, and no pane is ever permanently unseen.
 
+Scanning itself is not what that budget is spent on. On a Ryzen 7 7800X3D, with the size-optimised
+release profile the plugin actually ships, scanning ordinary agent-pane output costs about **380 ns
+per line, or roughly 215 MiB/s** — so a 400-line window is ~150 µs, the 5 000-line default backfill
+is ~1.9 ms, and the largest window a user can configure, 20 000 lines, is ~7.6 ms. That is 0.025% of
+the 30-second minimum cycle budget: the budget exists for the socket round trip per pane, not for the
+scan. A line dense with weak candidates costs about 450 ns instead of 380, and a pathological
+single 1 MiB line scans in ~1.25 ms. Reproduce the whole table with `cargo bench --bench scan_cost`,
+which measures the pure scanner over deterministic pane-like corpora and takes a few seconds.
+
 Badges are pushed with a TTL of roughly three cycles' worth of wall-clock — the interval plus that
 reading budget — which is what makes the display self-healing: kill the watcher and herdr expires the
 badges rather than leaving a stale warning on screen forever. Sizing the TTL off the interval alone
