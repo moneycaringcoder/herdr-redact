@@ -27,6 +27,7 @@ Strong confidence means the format is structurally identifiable; weak confidence
 | `pypi_token` | PyPI API token | strong | `default` | 1 |
 | `sendgrid_api_key` | SendGrid API key | strong | `default` | 1 |
 | `gitlab_pat` | GitLab personal access token | strong | `default` | 1 |
+| `grafana_service_account_token` | Grafana service account token | strong | `default` | 1 |
 | `huggingface_token` | Hugging Face token | strong | `default` | 1 |
 | `age_secret_key` | age secret key | strong | `default` | 1 |
 | `jdbc_url_password` | JDBC URL password | strong | `default` | 1 |
@@ -201,6 +202,15 @@ Matches `SG.`, a 22-character component, a dot, and a 43-character component, wi
 
 Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet.
 
+## `grafana_service_account_token`
+
+- **Label:** Grafana service account token
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** https://grafana.com/docs/grafana/latest/administration/service-accounts/
+
+Matches the `glsa_` prefix, a 32-character alphanumeric body, and an eight-character lowercase hexadecimal checksum separated by an underscore. Grafana's own generator is the source of the checksum algorithm; the rule recomputes its IEEE CRC-32 and little-endian encoding, so a string of the right shape with the wrong checksum does not fire.
+
 ## `huggingface_token`
 
 - **Label:** Hugging Face token
@@ -281,4 +291,81 @@ Matches secret-looking shell assignments and YAML or JSON-style mappings anchore
 - **Rotation guidance:** no provider page — Multi-line credential shapes do not identify an issuer, so rotation depends on whoever issued the credential.
 
 Matches a credential-shaped key whose value continues onto following lines, as a GCP service-account key, a Kubernetes secret manifest or a YAML block scalar prints one. The key must pass the same secret-ish name test the single-line assignment rule uses, the join is bounded to eight continuation lines and 4096 characters, and the joined value still has to survive the placeholder filter. It is weak because a key-and-value line is the shape of almost all structured output; where the joined value turns out to be something a strong rule validates on its own merits, that rule reports it instead. A bare `auth` key deliberately cannot start a join, because `AUTH` is a key qualifier rather than a secret-ish name and the single-line Docker rule already covers that shape.
+
+## Formats considered but not shipped
+
+These credential formats were considered and deliberately not shipped because precision is the product: an imprecise rule breaks the scanner's only promise.
+
+| Format | Marker | Reason |
+| --- | --- | --- |
+| GitLab pipeline trigger token | `glptt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab runner authentication token | `glrt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab runner authentication token created via registration token | `glrtr-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab deploy token | `gldt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab SCIM token | `glsoat-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab incoming mail token | `glimt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab OAuth application secret | `gloas-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| DigitalOcean personal access token | `dop_v1_` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| DigitalOcean OAuth access token | `doo_v1_` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| DigitalOcean OAuth refresh token | `dor_v1_` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| Slack app-level token | `xapp-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| Shopify Admin API access token | `shpat_` | The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset. |
+| Shopify delegate access token | `shppa_` | The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset. |
+| Shopify custom app access token | `shpca_` | The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset. |
+| Shopify app secret | `shpss_` | The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset. |
+| Atlassian API token | `ATATT` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Postman API key | `PMAK-` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| SonarQube project analysis token | `sqp_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| SonarQube user token | `squ_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| SonarQube global analysis token | `sqa_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Supabase personal access token | `sbp_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Databricks personal access token | `dapi` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Docker Hub personal access token | `dckr_pat_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| New Relic user API key | `NRAK-` | The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| New Relic browser key | `NRJS-` | The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| New Relic ingest license key | `NRII-` | The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Linear API key | `lin_api_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Figma personal access token | `figd_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Groq API key | `gsk_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Replicate API token | `r8_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Perplexity API key | `pplx-` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| OpenRouter API key | `sk-or-v1-` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
+| Doppler personal token | `dp.pt.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
+| Doppler service token | `dp.st.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
+| Doppler service account token | `dp.sa.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
+| Doppler CLI token | `dp.ct.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
+| Doppler SCIM token | `dp.scim.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
+| Terraform Cloud API token | `.atlasv1.` | The fixed marker is an infix, not a prefix. |
+| Fly.io authorization token | `FlyV1` | The marker is ordinary text and the body has no invariant length. |
+| Fly.io deploy token with fm1r marker | `fm1r_` | The marker is ordinary text and the body has no invariant length. |
+| Fly.io deploy token with fm2 marker | `fm2_` | The marker is ordinary text and the body has no invariant length. |
+| JFrog reference token | — | The 64-character value has no provider-assigned prefix or provider-controlled charset. |
+| Azure Storage account key | `AccountKey=` | The provider documents the key value as opaque. |
+| Telegram bot token | — | There is no invariant tail length because the bot identifier width changes. |
+| Discord bot token | — | The documented segment lengths are examples, not provider-guaranteed invariants. |
+| Square access token | `EAAA` | The body varies from 22 to 60 characters, so the prefix does not establish a precise shape. |
+| Mailgun API key | `key-` | The marker is a short English word and no provider-controlled source establishes the body grammar. |
+| Airtable personal access token | — | The provider documents the value as opaque and advises against pattern matching. |
+| Notion integration token | `ntn_` | The provider documents the value as opaque and advises against pattern matching. |
+| Grafana Cloud access policy token | `glc_` | The marker names a token and is not part of the secret value. |
+| OpenAI organization identifier | `org-` | This value is an identifier rather than a credential. |
+| Datadog API key | — | There is no provider-assigned prefix at all. |
+| Segment write key | — | There is no provider-assigned prefix at all. |
+| Vercel access token | — | There is no provider-assigned prefix at all. |
+| Netlify personal access token | — | There is no provider-assigned prefix at all. |
+| Render API key | — | There is no provider-assigned prefix at all. |
+| Railway API token | — | There is no provider-assigned prefix at all. |
+| Heroku API key | — | There is no provider-assigned prefix at all. |
+| Postmark server token | — | There is no provider-assigned prefix at all. |
+| Twitch client secret | — | There is no provider-assigned prefix at all. |
+| Asana personal access token | — | There is no provider-assigned prefix at all. |
+| Mistral API key | — | There is no provider-assigned prefix at all. |
+| Together AI API key | — | There is no provider-assigned prefix at all. |
+| Cohere API key | — | There is no provider-assigned prefix at all. |
+| DeepSeek API key | — | There is no provider-assigned prefix at all. |
+| Stripe test secret key | `sk_test_` | Test keys live in public documentation, CI fixtures, and sample apps, and leaking one costs nothing, so firing on them is pure cry-wolf. |
+| Stripe test restricted key | `rk_test_` | Test keys live in public documentation, CI fixtures, and sample apps, and leaking one costs nothing, so firing on them is pure cry-wolf. |
+| Twilio auth token | — | The AC and SK SIDs are identifiers rather than secrets, while the auth token is 32 bare hex characters indistinguishable from a git blob identifier. |
+| Cloudflare API token | — | The value is 40 characters of alphanumeric, underscore, and hyphen characters with no prefix. |
+| Generic high-entropy key | — | Generic 32- or 40-character hex or base64 keys have no provider-specific context. |
 

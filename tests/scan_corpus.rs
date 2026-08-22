@@ -181,6 +181,15 @@ const POSITIVE: &[Vector] = &[
         value: "glpat-0123456789abcdefghij",
         preview: "glpa\u{2026}ghij",
     },
+    // Grafana's checksum algorithm produces this checksum for a synthetic run
+    // of characters used as the 32-character body.
+    Vector {
+        rule: "grafana_service_account_token",
+        confidence: Confidence::Strong,
+        text: "glsa_0123456789abcdefghijklmnopqrstuv_950d9026",
+        value: "glsa_0123456789abcdefghijklmnopqrstuv_950d9026",
+        preview: "glsa\u{2026}9026",
+    },
     Vector {
         rule: "huggingface_token",
         confidence: Confidence::Strong,
@@ -392,6 +401,9 @@ $ pip install sk-learn
 Collecting sk-learn
 $ curl -H "sk-ms-version: 2024-01-01" https://api.internal/v1/health
 See the sk-learn docs, and the sk-ms-version header, for the migration notes.
+
+Grafana-shaped token with the wrong checksum: glsa_0123456789abcdefghijklmnopqrstuv_950d9027
+Grafana-shaped token with a 31-character body: glsa_0123456789abcdefghijklmnopqrstu_950d9026
 
 Not a token: eyJZZZZZZZZZZZZ.aaaaaaaaaaaaaa.bbbbbbbbbbbbbb
 Also not a token: eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.ZmFrZXNpZ25hdHVyZQ
@@ -718,6 +730,25 @@ fn jwt_needs_a_header_that_decodes_to_json_with_alg() {
     let matches = scan(vector("jwt").text, &rules, &KEY);
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].pattern, "jwt");
+}
+
+#[test]
+fn grafana_service_account_token_requires_its_checksum() {
+    let rules = builtin();
+    assert!(scan(
+        "glsa_0123456789abcdefghijklmnopqrstuv_950d9027",
+        &rules,
+        &KEY
+    )
+    .is_empty());
+
+    let matches = scan(
+        "glsa_0123456789abcdefghijklmnopqrstuv_950d9026",
+        &rules,
+        &KEY,
+    );
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "grafana_service_account_token");
 }
 
 #[test]

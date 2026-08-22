@@ -115,6 +115,379 @@ pub fn rule_packs() -> &'static [RulePack] {
     &RULE_PACKS
 }
 
+/// A credential format considered and deliberately not shipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RejectedFormat {
+    /// Provider and token kind, e.g. "DigitalOcean personal access token".
+    pub format: &'static str,
+    /// The prefix or marker it is known by, or "" when it has none.
+    pub marker: &'static str,
+    /// Why it cannot be matched precisely enough to ship.
+    pub reason: &'static str,
+}
+
+const REJECTED_FORMATS: [RejectedFormat; 70] = [
+    RejectedFormat {
+        format: "GitLab pipeline trigger token",
+        marker: "glptt-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "GitLab runner authentication token",
+        marker: "glrt-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "GitLab runner authentication token created via registration token",
+        marker: "glrtr-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "GitLab deploy token",
+        marker: "gldt-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "GitLab SCIM token",
+        marker: "glsoat-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "GitLab incoming mail token",
+        marker: "glimt-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "GitLab OAuth application secret",
+        marker: "gloas-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "DigitalOcean personal access token",
+        marker: "dop_v1_",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "DigitalOcean OAuth access token",
+        marker: "doo_v1_",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "DigitalOcean OAuth refresh token",
+        marker: "dor_v1_",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "Slack app-level token",
+        marker: "xapp-",
+        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "Shopify Admin API access token",
+        marker: "shpat_",
+        reason: "The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "Shopify delegate access token",
+        marker: "shppa_",
+        reason: "The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "Shopify custom app access token",
+        marker: "shpca_",
+        reason: "The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "Shopify app secret",
+        marker: "shpss_",
+        reason: "The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset.",
+    },
+    RejectedFormat {
+        format: "Atlassian API token",
+        marker: "ATATT",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Postman API key",
+        marker: "PMAK-",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "SonarQube project analysis token",
+        marker: "sqp_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "SonarQube user token",
+        marker: "squ_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "SonarQube global analysis token",
+        marker: "sqa_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Supabase personal access token",
+        marker: "sbp_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Databricks personal access token",
+        marker: "dapi",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Docker Hub personal access token",
+        marker: "dckr_pat_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "New Relic user API key",
+        marker: "NRAK-",
+        reason: "The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "New Relic browser key",
+        marker: "NRJS-",
+        reason: "The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "New Relic ingest license key",
+        marker: "NRII-",
+        reason: "The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Linear API key",
+        marker: "lin_api_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Figma personal access token",
+        marker: "figd_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Groq API key",
+        marker: "gsk_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Replicate API token",
+        marker: "r8_",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Perplexity API key",
+        marker: "pplx-",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "OpenRouter API key",
+        marker: "sk-or-v1-",
+        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
+    },
+    RejectedFormat {
+        format: "Doppler personal token",
+        marker: "dp.pt.",
+        reason: "The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules.",
+    },
+    RejectedFormat {
+        format: "Doppler service token",
+        marker: "dp.st.",
+        reason: "The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules.",
+    },
+    RejectedFormat {
+        format: "Doppler service account token",
+        marker: "dp.sa.",
+        reason: "The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules.",
+    },
+    RejectedFormat {
+        format: "Doppler CLI token",
+        marker: "dp.ct.",
+        reason: "The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules.",
+    },
+    RejectedFormat {
+        format: "Doppler SCIM token",
+        marker: "dp.scim.",
+        reason: "The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules.",
+    },
+    RejectedFormat {
+        format: "Terraform Cloud API token",
+        marker: ".atlasv1.",
+        reason: "The fixed marker is an infix, not a prefix.",
+    },
+    RejectedFormat {
+        format: "Fly.io authorization token",
+        marker: "FlyV1",
+        reason: "The marker is ordinary text and the body has no invariant length.",
+    },
+    RejectedFormat {
+        format: "Fly.io deploy token with fm1r marker",
+        marker: "fm1r_",
+        reason: "The marker is ordinary text and the body has no invariant length.",
+    },
+    RejectedFormat {
+        format: "Fly.io deploy token with fm2 marker",
+        marker: "fm2_",
+        reason: "The marker is ordinary text and the body has no invariant length.",
+    },
+    RejectedFormat {
+        format: "JFrog reference token",
+        marker: "",
+        reason: "The 64-character value has no provider-assigned prefix or provider-controlled charset.",
+    },
+    RejectedFormat {
+        format: "Azure Storage account key",
+        marker: "AccountKey=",
+        reason: "The provider documents the key value as opaque.",
+    },
+    RejectedFormat {
+        format: "Telegram bot token",
+        marker: "",
+        reason: "There is no invariant tail length because the bot identifier width changes.",
+    },
+    RejectedFormat {
+        format: "Discord bot token",
+        marker: "",
+        reason: "The documented segment lengths are examples, not provider-guaranteed invariants.",
+    },
+    RejectedFormat {
+        format: "Square access token",
+        marker: "EAAA",
+        reason: "The body varies from 22 to 60 characters, so the prefix does not establish a precise shape.",
+    },
+    RejectedFormat {
+        format: "Mailgun API key",
+        marker: "key-",
+        reason: "The marker is a short English word and no provider-controlled source establishes the body grammar.",
+    },
+    RejectedFormat {
+        format: "Airtable personal access token",
+        marker: "",
+        reason: "The provider documents the value as opaque and advises against pattern matching.",
+    },
+    RejectedFormat {
+        format: "Notion integration token",
+        marker: "ntn_",
+        reason: "The provider documents the value as opaque and advises against pattern matching.",
+    },
+    RejectedFormat {
+        format: "Grafana Cloud access policy token",
+        marker: "glc_",
+        reason: "The marker names a token and is not part of the secret value.",
+    },
+    RejectedFormat {
+        format: "OpenAI organization identifier",
+        marker: "org-",
+        reason: "This value is an identifier rather than a credential.",
+    },
+    RejectedFormat {
+        format: "Datadog API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Segment write key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Vercel access token",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Netlify personal access token",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Render API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Railway API token",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Heroku API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Postmark server token",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Twitch client secret",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Asana personal access token",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Mistral API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Together AI API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Cohere API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "DeepSeek API key",
+        marker: "",
+        reason: "There is no provider-assigned prefix at all.",
+    },
+    RejectedFormat {
+        format: "Stripe test secret key",
+        marker: "sk_test_",
+        reason: "Test keys live in public documentation, CI fixtures, and sample apps, and leaking one costs nothing, so firing on them is pure cry-wolf.",
+    },
+    RejectedFormat {
+        format: "Stripe test restricted key",
+        marker: "rk_test_",
+        reason: "Test keys live in public documentation, CI fixtures, and sample apps, and leaking one costs nothing, so firing on them is pure cry-wolf.",
+    },
+    RejectedFormat {
+        format: "Twilio auth token",
+        marker: "",
+        reason: "The AC and SK SIDs are identifiers rather than secrets, while the auth token is 32 bare hex characters indistinguishable from a git blob identifier.",
+    },
+    RejectedFormat {
+        format: "Cloudflare API token",
+        marker: "",
+        reason: "The value is 40 characters of alphanumeric, underscore, and hyphen characters with no prefix.",
+    },
+    RejectedFormat {
+        format: "Generic high-entropy key",
+        marker: "",
+        reason: "Generic 32- or 40-character hex or base64 keys have no provider-specific context.",
+    },
+];
+
+/// Returns credential formats that were researched and deliberately not shipped.
+///
+/// Rejections are as valuable as additions: without this ledger, the next
+/// person re-derives the same conclusions. Adding an imprecise rule merely to
+/// look thorough would break the scanner's only promise.
+pub fn rejected_formats() -> &'static [RejectedFormat] {
+    &REJECTED_FORMATS
+}
+
 /// A rule name this build has retired, and the active rule that answers for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuleAlias {
@@ -494,16 +867,8 @@ fn selected_rule_packs(requested: &[String]) -> (Vec<RulePack>, Vec<String>) {
 
 /// Every built-in rule, in the order `--rules` prints them.
 ///
-/// Deliberately **not** shipped, because none of them can be matched precisely
-/// enough to be worth the false positives:
-///
-/// * Stripe `sk_test_`/`rk_test_` — test keys live in public documentation, CI
-///   fixtures and sample apps, and leaking one costs nothing. Firing on them is
-///   pure cry-wolf.
-/// * Twilio — the `AC…`/`SK…` SIDs are identifiers rather than secrets, and the
-///   auth token is 32 bare hex characters, indistinguishable from a git blob id.
-/// * Cloudflare API tokens — 40 characters of `[A-Za-z0-9_-]` with no prefix.
-/// * Generic 32/40-character hex or base64 "keys" with no context.
+/// Formats considered but deliberately not shipped are recorded by
+/// [`rejected_formats`].
 fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule> {
     let mut rules = vec![
         // AWS access key IDs are base32, so the tail is uppercase alphanumeric.
@@ -710,6 +1075,18 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
         )
         .standalone(),
         Rule::new(
+            "grafana_service_account_token",
+            "Grafana service account token",
+            Confidence::Strong,
+            "Matches the `glsa_` prefix, a 32-character alphanumeric body, and an eight-character lowercase hexadecimal checksum separated by an underscore. Grafana's own generator is the source of the checksum algorithm; the rule recomputes its IEEE CRC-32 and little-endian encoding, so a string of the right shape with the wrong checksum does not fire.",
+            RotationGuidance::Url(
+                "https://grafana.com/docs/grafana/latest/administration/service-accounts/",
+            ),
+            r"\bglsa_[0-9A-Za-z]{32}_[0-9a-f]{8}\b",
+        )
+        .standalone()
+        .check(is_grafana_service_account_token),
+        Rule::new(
             "huggingface_token",
             "Hugging Face token",
             Confidence::Strong,
@@ -879,6 +1256,37 @@ fn has_varied_body(caps: &Captures<'_>) -> bool {
     let value = &caps[0];
     let tail = &value[4..];
     !tail.bytes().all(|byte| byte == tail.as_bytes()[0])
+}
+
+/// A Grafana service-account token carries the checksum of its prefix and body
+/// after the last underscore.
+fn is_grafana_service_account_token(caps: &Captures<'_>) -> bool {
+    let value = &caps[0];
+    let Some((payload, checksum)) = value.rsplit_once('_') else {
+        return false;
+    };
+    let checksum_bytes = crc32_ieee(payload.as_bytes()).to_le_bytes();
+    let mut encoded = [0u8; 8];
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (byte, pair) in checksum_bytes.iter().zip(encoded.chunks_exact_mut(2)) {
+        pair[0] = HEX[usize::from(byte >> 4)];
+        pair[1] = HEX[usize::from(byte & 0x0f)];
+    }
+    checksum.as_bytes() == encoded.as_slice()
+}
+
+/// IEEE CRC-32 used by Grafana's service-account token generator. It lives here
+/// as a small bitwise implementation so structural validation adds no dependency.
+fn crc32_ieee(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 /// A JWT is only a JWT when its header segment base64url-decodes to a JSON

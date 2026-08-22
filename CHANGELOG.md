@@ -15,6 +15,26 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Added
 
+- A rule for Grafana service-account tokens, `grafana_service_account_token`,
+  and it is the first rule that verifies a checksum. `glsa_` is followed by a
+  32-character alphanumeric body and an eight-character hexadecimal checksum,
+  and Grafana's own generator computes that checksum as IEEE CRC-32 over the
+  prefix and body, little-endian, hex-encoded. The rule recomputes it, so a
+  string of exactly the right shape with the wrong checksum does not fire —
+  which the corpus asserts, in both directions. The algorithm was confirmed by
+  recomputing the checksum of the sample token in Grafana's own documentation
+  rather than by assuming what the eight hex characters were for.
+- A record of the formats deliberately **not** shipped: around seventy provider
+  credential formats considered during this pass, each with the specific
+  structural fact that was missing, carried as a compiled-in ledger and
+  published at the end of the rule catalogue. Two research passes over roughly
+  fifty candidates produced exactly one rule, because a prefix a provider
+  publishes is not a structure a scanner can verify: without a corroborated
+  length, charset, or checksum, a rule keyed on `dop_v1_` or `ATATT` or `gsk_`
+  reports whatever else happens to start that way. The rejections are the more
+  useful half of the work — they stop the next person re-deriving them, and they
+  are the reason this scanner can be trusted when it does fire. Tests assert no
+  ledger entry contradicts an active rule.
 - A public rule catalogue, [`docs/rules.md`](docs/rules.md): every compiled-in
   rule with its confidence, pack and version, rotation guidance, any former
   names, and the structural checks it applies as well as what it deliberately

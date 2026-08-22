@@ -23,6 +23,7 @@ const DEFAULT_RULES: &[(&str, Confidence)] = &[
     ("pypi_token", Confidence::Strong),
     ("sendgrid_api_key", Confidence::Strong),
     ("gitlab_pat", Confidence::Strong),
+    ("grafana_service_account_token", Confidence::Strong),
     ("huggingface_token", Confidence::Strong),
     ("age_secret_key", Confidence::Strong),
     ("jdbc_url_password", Confidence::Strong),
