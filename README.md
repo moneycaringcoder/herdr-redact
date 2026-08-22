@@ -368,7 +368,10 @@ Options may come before or after the verb, so `redact --lines 800 --once` and
 `redact --sarif` prints SARIF 2.1.0 to stdout, so redirect it with a shell when a file is needed:
 `redact --sarif > findings.sarif`. Values use exactly the same masked previews as every other output
 surface. The export carries the public finding id as a SARIF partial fingerprint and never includes
-the keyed digest.
+the keyed digest. The test suite validates the output against a vendored copy of the SARIF 2.1.0
+schema — the same document the export's own `$schema` field points at — so a change that produced
+well-shaped nonsense fails here rather than in your code-scanning upload. A finding whose line number
+is unknown carries no `region` at all rather than a fabricated line 1.
 
 `redact --suppress <ID>` is the command-line equivalent of pressing `s`. `redact --suppressions`
 lists only each active rule name and a short keyed digest, never a preview. Suppression is permanent

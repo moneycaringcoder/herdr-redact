@@ -15,6 +15,19 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Added
 
+- SARIF output is now validated against the SARIF 2.1.0 schema in the test
+  suite. A snapshot test proves the output has not changed; it cannot prove a
+  consumer can read it, and SARIF exists to be read by tools this repository
+  does not control. The schema is vendored — the exact SchemaStore document our
+  own `$schema` field points at, with its retrieval date and checksum recorded
+  next to it — so validation runs offline, like everything else here. The gate
+  carries negative controls that mutate valid output until the schema rejects
+  it, because a validator that accepted anything would have passed in silence.
+  The validator is a hand-written draft-07 subset rather than a schema crate:
+  the smallest one tried tripled this crate's dependency count, ICU stack
+  included, for a test-only oracle. It hard-fails on any schema keyword it does
+  not implement, so it can never quietly under-validate, and a test proves it
+  rejects a violation of every keyword it claims.
 - A scan-cost benchmark, `cargo bench --bench scan_cost`, so the cost of the
   thing this plugin does on every cycle is measured rather than assumed. It runs
   the pure scanner over deterministic pane-like corpora — the 400-line default
@@ -54,6 +67,13 @@ release, with the old name accepted as an alias for at least one minor cycle.
   can outlive it. The note now names what really keys on a rule name — the
   state file, `--explain`, and the `pattern` and `ruleId` fields of the JSON
   and SARIF output — and the promise it makes is implemented.
+- A finding whose line number is unknown produced invalid SARIF. `StoredFinding`
+  reads an absent `line` as zero, and SARIF requires a region's `startLine` to
+  be at least one, so exporting such a finding emitted a document a conforming
+  consumer must reject. The physical location now carries no region at all in
+  that case, which is what SARIF is for: the pane is still named, and a line
+  nobody observed is not invented to fill the field. Found by the new schema
+  gate on its first run, which is the argument for having one.
 
 ## [0.1.1] - 2026-08-18
 
