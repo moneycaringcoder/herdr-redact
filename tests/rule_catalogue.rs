@@ -10,7 +10,7 @@ use std::{env, fs};
 
 use redact::config::Config;
 use redact::model::Confidence;
-use redact::scan::{self, rule_packs, RotationGuidance, Rules};
+use redact::scan::{self, rejected_formats, rule_packs, RejectedFormat, RotationGuidance, Rules};
 
 const REGENERATION_COMMAND: &str = "REDACT_WRITE_RULE_CATALOGUE=1 cargo test --test rule_catalogue";
 const WRITE_ENV: &str = "REDACT_WRITE_RULE_CATALOGUE";
@@ -30,6 +30,15 @@ fn all_compiled_rules() -> Rules {
         ..Config::default()
     };
     Rules::compile(&config).expect("all compiled-in rule packs should compile")
+}
+
+fn rejected_format_row(rejected: &RejectedFormat) -> String {
+    let marker = if rejected.marker.is_empty() {
+        "—".to_string()
+    } else {
+        format!("`{}`", rejected.marker)
+    };
+    format!("| {} | {marker} | {} |", rejected.format, rejected.reason)
 }
 
 fn render_catalogue(rules: &Rules) -> String {
@@ -115,6 +124,18 @@ fn render_catalogue(rules: &Rules) -> String {
             .expect("writing Markdown into a String should succeed");
     }
 
+    output.push_str("## Formats considered but not shipped\n\n");
+    output.push_str(
+        "These credential formats were considered and deliberately not shipped because precision is the product: an imprecise rule breaks the scanner's only promise.\n\n",
+    );
+    output.push_str("| Format | Marker | Reason |\n");
+    output.push_str("| --- | --- | --- |\n");
+    for rejected in rejected_formats() {
+        writeln!(output, "{}", rejected_format_row(rejected))
+            .expect("writing Markdown into a String should succeed");
+    }
+    output.push('\n');
+
     output
 }
 
@@ -142,21 +163,30 @@ fn the_committed_catalogue_matches_the_compiled_rules() {
     let committed =
         fs::read_to_string(path).expect("the committed rule catalogue should be readable");
     assert_eq!(
-        committed, rendered,
+        &committed, &rendered,
         "docs/rules.md does not match the compiled rules; regenerate it with `{REGENERATION_COMMAND}`"
     );
+
+    for rejected in rejected_formats() {
+        let row = rejected_format_row(rejected);
+        assert!(
+            committed.lines().any(|line| line == row),
+            "rejected format `{}` has no catalogue row",
+            rejected.format
+        );
+    }
 }
 
 #[test]
 fn every_compiled_rule_appears_in_the_catalogue() {
     let rules = all_compiled_rules();
-    let catalogue = committed_catalogue();
+    let catalogue = render_catalogue(&rules);
     let active: BTreeSet<_> = rules.names.iter().map(|(name, _)| name.as_str()).collect();
     let headings: Vec<_> = catalogue
         .lines()
         .filter_map(|line| {
             let heading = line.strip_prefix("## ")?;
-            if heading == "Summary" {
+            if heading == "Summary" || heading == "Formats considered but not shipped" {
                 return None;
             }
             Some(
@@ -185,6 +215,47 @@ fn every_compiled_rule_appears_in_the_catalogue() {
         active.len(),
         "each active rule should have exactly one catalogue section"
     );
+}
+
+#[test]
+fn rejected_formats_are_complete_unique_and_do_not_contradict_active_rules() {
+    let rules = all_compiled_rules();
+    let mut formats = BTreeSet::new();
+
+    for rejected in rejected_formats() {
+        assert!(
+            !rejected.format.trim().is_empty(),
+            "a rejected format has an empty name"
+        );
+        assert!(
+            !rejected.reason.trim().is_empty(),
+            "rejected format `{}` has an empty reason",
+            rejected.format
+        );
+        assert!(
+            formats.insert(rejected.format),
+            "rejected format `{}` appears more than once",
+            rejected.format
+        );
+
+        if rejected.marker.is_empty() {
+            continue;
+        }
+        for (name, _) in &rules.names {
+            assert!(
+                !name.starts_with(rejected.marker),
+                "rejected marker `{}` prefixes active rule name `{name}`",
+                rejected.marker
+            );
+        }
+        let matches = scan::scan(rejected.marker, &rules, &[0_u8; 16]);
+        assert!(
+            matches.is_empty(),
+            "rejected marker `{}` for `{}` is matched by active rules: {matches:?}",
+            rejected.marker,
+            rejected.format
+        );
+    }
 }
 
 #[test]

@@ -612,6 +612,7 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `google_api_key` | `AIza…` | strong |
 | `google_oauth_client_secret` | `GOCSPX-…` | strong |
 | `gitlab_pat` | `glpat-…` | strong |
+| `grafana_service_account_token` | `glsa_…` service-account tokens whose checksum matches | strong |
 | `npm_token` | `npm_…` | strong |
 | `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
 | `sendgrid_api_key` | `SG.…` | strong |
@@ -629,7 +630,11 @@ it drifts, so it describes the scanner you are running rather than the one someb
 
 ### What is deliberately not caught
 
-Precision is the product, so several obvious candidates are left out on purpose:
+Precision is the product, so several obvious candidates are left out on purpose. The ones below are
+the instructive cases; the full record — around seventy provider formats considered and declined,
+each with the specific structural fact that was missing — is generated from the same compiled-in
+ledger the scanner carries, at the end of [`docs/rules.md`](docs/rules.md). Popularity is not an
+argument: a rule that fires on a prefix alone would report ordinary build output as a credential.
 
 - **Stripe test keys** (`sk_test_`, `rk_test_`). They live in public documentation, CI fixtures and
   sample apps, and leaking one costs nothing. Firing on them is pure cry-wolf.
