@@ -15,6 +15,18 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Added
 
+- A public rule catalogue, [`docs/rules.md`](docs/rules.md): every compiled-in
+  rule with its confidence, pack and version, rotation guidance, any former
+  names, and the structural checks it applies as well as what it deliberately
+  rejects. Precision bought by structure is this plugin's central claim, and
+  until now it could only be read as Rust. The file is generated from the
+  compiled rule set and a test fails if the committed copy differs, because a
+  stale catalogue does not merely go out of date — it makes a false claim about
+  what is being detected. Its per-rule prose is each rule's own `explain` text,
+  the same words `redact --explain` prints, so there is one source and nothing
+  to keep in sync by hand. A further test runs the shipped scanner over the
+  catalogue and fails on a strong match, so the documentation cannot start
+  carrying the thing it documents.
 - SARIF output is now validated against the SARIF 2.1.0 schema in the test
   suite. A snapshot test proves the output has not changed; it cannot prove a
   consumer can read it, and SARIF exists to be read by tools this repository
