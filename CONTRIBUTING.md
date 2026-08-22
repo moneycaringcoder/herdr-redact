@@ -41,8 +41,10 @@ cost; a warning on ordinary build output is not.
 
 The most useful contribution this project can receive. To make one easy to merge:
 
-- Add the rule with a **stable machine name**. The allowlist and the notification
-  rate limiter key on it, so renaming one later is a breaking change for users.
+- Add the rule with a **stable machine name**. The state file, `--explain`, and
+  the `pattern` and `ruleId` fields of the JSON and SARIF output key on it, so
+  renaming one later is a breaking change for users; if you must, add the old
+  name to the rename ledger in `src/scan.rs` in the same commit.
 - Add a **structurally valid but obviously fake** positive vector. Never a real
   credential, not even an expired one, not even your own. Use `EXAMPLE`, `FAKE`,
   or repeated characters as filler.
@@ -52,6 +54,11 @@ The most useful contribution this project can receive. To make one easy to merge
   documents this prefix here" is worth a line of comment.
 - Prefer a rule anchored on a distinctive prefix over one anchored on length and
   charset. `ghp_` plus 36 base62 is safe; 36 base62 on its own is not.
+- **Regenerate the rule catalogue** with
+  `REDACT_WRITE_RULE_CATALOGUE=1 cargo test --test rule_catalogue`. `docs/rules.md`
+  is generated from the compiled rules and a test compares it, so a new rule that
+  is not in it fails the suite. Its per-rule prose is the rule's own `explain`
+  text, which means that text is user-facing documentation: write it accordingly.
 
 If you cannot match a format precisely, it is fine — better, even — to leave it
 out and say so in the README's table of what is deliberately not caught.

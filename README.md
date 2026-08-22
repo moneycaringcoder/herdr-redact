@@ -592,6 +592,11 @@ whose relevance is too specialized for every user, without demoting any protecti
 default set. `redact --rules` appends each rule's pack and version after the existing name and
 confidence columns; custom patterns have no compiled-in pack or version and show `-` for both.
 
+The table below is the short version. The full catalogue — every rule with its confidence, pack,
+rotation guidance, and the structural checks it applies as well as what it deliberately rejects — is
+[`docs/rules.md`](docs/rules.md). That file is generated from the compiled rules and a test fails if
+it drifts, so it describes the scanner you are running rather than the one somebody documented once.
+
 | Rule | Catches | Confidence |
 | --- | --- | --- |
 | `aws_access_key_id` | `AKIA` or `ASIA` plus 16 base32 characters | strong |
