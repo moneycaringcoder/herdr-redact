@@ -15,6 +15,22 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Added
 
+- A scan-cost benchmark, `cargo bench --bench scan_cost`, so the cost of the
+  thing this plugin does on every cycle is measured rather than assumed. It runs
+  the pure scanner over deterministic pane-like corpora — the 400-line default
+  window, the 5 000-line default backfill, the 20 000-line largest window a user
+  can configure, a sparse-match variant, a weak-candidate-heavy variant, and a
+  1 MiB single line — checks each corpus produces the matches it is supposed to
+  before timing it, and reports cost per line and throughput. It adds no
+  dependency, because a number humans read is not worth a dependency tree, and
+  it uses the bench profile, which inherits the size-optimised release profile
+  the plugin actually ships. On a Ryzen 7 7800X3D that is about 380 ns per line,
+  roughly 215 MiB/s, so the largest configurable window costs about 7.6 ms —
+  0.025% of the minimum cycle budget, which exists for the socket round trip per
+  pane rather than for the scan. The README now states that figure instead of
+  leaving the reading budget looking like a magic number. It is deliberately not
+  a required CI check: timings on shared runners are noisy, and a noisy required
+  performance gate is worse than none.
 - Rule name aliases, so the promise above can be kept rather than only made. A
   rule may now carry former names: a compiled-in rename ledger covers the
   built-in rules, and a `patterns` entry may list its own `former_names` for a

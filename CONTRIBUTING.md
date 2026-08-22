@@ -84,6 +84,15 @@ No test requires a running herdr. The socket tests stand up a real Unix socket i
 a temp directory and reply with payloads captured from a live server; see
 `tests/fixtures/README.md` for why the fixtures keep fields the code ignores.
 
+Scan cost has a benchmark, `cargo bench --bench scan_cost`. It measures the pure
+scanner over deterministic pane-like buffers up to the largest window a user can
+configure, prints cost per line and throughput, and needs no dependency and no
+running herdr. It is deliberately **not** a required CI check: timings on shared
+runners are noisy, and a noisy required performance gate is worse than none. Run
+it before and after a change that touches `src/scan.rs`, on a quiet machine, and
+put both numbers in the pull request. The figures quoted in the README were taken
+that way.
+
 ## What makes a change easy to merge
 
 **A test that fails before your fix and passes after it.** This matters more here
