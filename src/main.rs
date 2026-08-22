@@ -187,6 +187,13 @@ fn rules(args: &[String], config: &config::Config) -> Result<()> {
             None => println!("{name}\t{}\t-\t-", confidence.as_str()),
         }
     }
+    // A compatibility alias that is not shown anywhere becomes folklore, so
+    // list each retired name whose replacement is part of this effective set.
+    for (former, current) in &rules.aliases {
+        if rules.names.iter().any(|(name, _)| name == current) {
+            eprintln!("redact: `{former}` is a former name of `{current}`");
+        }
+    }
     // A note here usually means a setting the user believes is doing something
     // and is not. Printing it on the rule listing is where they will look.
     for note in &rules.notes {
@@ -249,7 +256,16 @@ fn explain(args: &[String]) -> Result<()> {
     let name = name.trim();
     let rules = redact::scan::Rules::compile(&config::load()?)?;
 
-    if let Some(explanation) = rules.explanation(name) {
+    if let Some(resolved) = rules.resolve(name) {
+        let explanation = rules
+            .explanation(&resolved.name)
+            .expect("a resolved rule name is active");
+        if let Some(former) = resolved.former.as_deref() {
+            eprintln!(
+                "redact: `{former}` is a former name of `{}`; update anything that still uses it",
+                resolved.name
+            );
+        }
         println!("Rule: {}", explanation.name);
         println!("Label: {}", explanation.label);
         println!("Confidence: {}", explanation.confidence.as_str());

@@ -13,9 +13,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use redact::config::{self, Config};
+use redact::config::{self, Config, CustomPattern};
 use redact::findings::Store;
 use redact::model::{Confidence, Finding, Match, PaneRef};
+use redact::scan::Rules;
 
 /// A structurally valid but obviously fake AWS access key ID. It exists so the
 /// "nothing on disk is a secret" test has a concrete string to hunt for.
@@ -73,6 +74,20 @@ impl Drop for StateDir {
 fn config(max_findings: usize) -> Config {
     Config {
         max_findings,
+        ..Config::default()
+    }
+}
+
+fn config_with_rename(max_findings: usize, former: &str, current: &str) -> Config {
+    Config {
+        max_findings,
+        patterns: vec![CustomPattern {
+            name: current.to_string(),
+            former_names: vec![former.to_string()],
+            regex: "RENAMED_[A-Z0-9]+".to_string(),
+            label: None,
+            strong: true,
+        }],
         ..Config::default()
     }
 }
@@ -253,6 +268,163 @@ fn a_suppression_is_specific_to_both_rule_and_digest() {
         different_rule.len(),
         1,
         "the same value from a different rule must remain visible"
+    );
+    drop(state);
+}
+
+#[test]
+fn a_suppression_under_a_retired_rule_still_suppresses_the_current_rule() {
+    let state = StateDir::new();
+    let old_name = "legacy_internal_token";
+    let current_name = "internal_token";
+    let digest = 0x1234_5678_9abc_def0;
+
+    {
+        let mut store = Store::load(&config(500));
+        let fresh = store.observe(&pane("wE:p2"), &[a_match(old_name, digest)], 100);
+        assert_eq!(store.suppress(&fresh[0].id), 1);
+        store.save().expect("save retired-name state");
+    }
+
+    let rename_config = config_with_rename(500, old_name, current_name);
+    let rules = Rules::compile(&rename_config).expect("compile renamed rule");
+    let mut store = Store::load(&rename_config);
+    assert_eq!(
+        store.honour_renames(&rules),
+        2,
+        "the suppression and its matching finding must both be rewritten"
+    );
+    assert_eq!(store.suppressions()[0].rule(), current_name);
+    assert_eq!(only(&store.findings()).pattern, current_name);
+
+    assert!(
+        store
+            .observe(&pane("wF:p9"), &[a_match(current_name, digest)], 200)
+            .is_empty(),
+        "the value suppressed under the retired name must not come back"
+    );
+    assert_eq!(
+        store.findings().len(),
+        1,
+        "the suppressed observation must not create another finding"
+    );
+    drop(state);
+}
+
+#[test]
+fn an_acknowledged_retired_finding_merges_into_the_current_finding() {
+    let state = StateDir::new();
+    let old_name = "legacy_internal_token";
+    let current_name = "internal_token";
+    let digest = 71;
+
+    {
+        let mut store = Store::load(&config(500));
+        let retired = store.observe(&pane("wE:p2"), &[a_match(old_name, digest)], 100);
+        assert_eq!(store.acknowledge(&retired[0].id), 1);
+        assert_eq!(
+            store
+                .observe(&pane("wE:p2"), &[a_match(current_name, digest)], 110)
+                .len(),
+            1,
+            "the stale and current fingerprints differ before migration"
+        );
+        store.save().expect("save colliding findings");
+    }
+
+    let rename_config = config_with_rename(500, old_name, current_name);
+    let rules = Rules::compile(&rename_config).expect("compile renamed rule");
+    let mut store = Store::load(&rename_config);
+    assert_eq!(
+        store.honour_renames(&rules),
+        1,
+        "the retired finding must be dropped into its current-name survivor"
+    );
+
+    let findings = store.findings();
+    let finding = only(&findings);
+    assert_eq!(finding.pattern, current_name);
+    assert!(
+        finding.acknowledged,
+        "the retired finding's acknowledgement must survive the merge"
+    );
+    assert!(
+        store
+            .observe(&pane("wE:p2"), &[a_match(current_name, digest)], 200)
+            .is_empty(),
+        "re-observation under the current name must not become a second finding"
+    );
+    assert_eq!(store.findings().len(), 1);
+    drop(state);
+}
+
+#[test]
+fn honouring_renames_is_silent_without_work_and_idempotent_after_work() {
+    let state = StateDir::new();
+    let mut store = Store::load(&config(500));
+    let default_rules = Rules::compile(&Config::default()).expect("compile default rules");
+    assert_eq!(store.honour_renames(&default_rules), 0);
+    assert!(
+        store.report(Vec::new()).notes.is_empty(),
+        "a build with no renames must not narrate an empty migration"
+    );
+
+    let old_name = "legacy_internal_token";
+    let current_name = "internal_token";
+    let rename_config = config_with_rename(500, old_name, current_name);
+    let rules = Rules::compile(&rename_config).expect("compile renamed rule");
+    assert_eq!(store.honour_renames(&rules), 0);
+    assert!(
+        store.report(Vec::new()).notes.is_empty(),
+        "a configured rename with no matching state must stay silent"
+    );
+
+    store.observe(&pane("wE:p2"), &[a_match(old_name, 72)], 100);
+    assert_eq!(store.honour_renames(&rules), 1);
+    let notes_after_first = store.report(Vec::new()).notes;
+    assert_eq!(store.honour_renames(&rules), 0);
+    assert_eq!(
+        store.report(Vec::new()).notes,
+        notes_after_first,
+        "a second migration must neither rewrite nor add another note"
+    );
+    drop(state);
+}
+
+#[test]
+fn a_rename_note_names_only_the_rules_and_reaches_the_report() {
+    let state = StateDir::new();
+    let old_name = "legacy_internal_token";
+    let current_name = "internal_token";
+    let digest = 8_675_309;
+    let rename_config = config_with_rename(500, old_name, current_name);
+    let rules = Rules::compile(&rename_config).expect("compile renamed rule");
+    let mut store = Store::load(&rename_config);
+    let retired = store.observe(&pane("wE:p2"), &[a_match(old_name, digest)], 100)[0]
+        .id
+        .clone();
+
+    assert_eq!(store.honour_renames(&rules), 1);
+    let notes = store.report(Vec::new()).notes;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let note = &notes[0];
+    assert!(note.contains(old_name), "{note}");
+    assert!(note.contains(current_name), "{note}");
+    assert!(
+        !note.contains(&digest.to_string()),
+        "a migration note must never contain the keyed digest: {note}"
+    );
+    assert!(
+        !note.contains(&format!("{digest:016x}")),
+        "a migration note must never contain a hex digest: {note}"
+    );
+    assert!(
+        !note.contains(&retired),
+        "a migration note must never contain a finding id: {note}"
+    );
+    assert!(
+        !note.contains("AKIA\u{2026}MPLE"),
+        "a migration note must never contain a masked preview: {note}"
     );
     drop(state);
 }

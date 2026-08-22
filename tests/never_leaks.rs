@@ -455,6 +455,7 @@ fn a_user_supplied_rule_masks_its_value_like_any_other() {
         patterns: vec![
             redact::config::CustomPattern {
                 name: "internal_token".into(),
+                former_names: Vec::new(),
                 // Matches the whole thing, no capture group.
                 regex: r"INT-[A-Za-z0-9]{24}".into(),
                 label: Some("Internal service token".into()),
@@ -462,6 +463,7 @@ fn a_user_supplied_rule_masks_its_value_like_any_other() {
             },
             redact::config::CustomPattern {
                 name: "internal_weak".into(),
+                former_names: Vec::new(),
                 regex: r"WEAK-[A-Za-z0-9]{10}".into(),
                 label: None,
                 strong: false,

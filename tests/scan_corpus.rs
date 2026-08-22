@@ -1139,6 +1139,7 @@ fn config_with(patterns: Vec<CustomPattern>, allowlist: Vec<String>) -> Config {
 fn custom(name: &str, regex: &str, strong: bool) -> CustomPattern {
     CustomPattern {
         name: name.to_string(),
+        former_names: Vec::new(),
         regex: regex.to_string(),
         label: None,
         strong,
@@ -1179,6 +1180,7 @@ fn a_custom_pattern_can_carry_a_human_label() {
     let config = config_with(
         vec![CustomPattern {
             name: "acme_internal".to_string(),
+            former_names: Vec::new(),
             regex: r"ACME-[0-9]{8}".to_string(),
             label: Some("ACME internal token".to_string()),
             strong: true,

@@ -115,6 +115,27 @@ pub fn rule_packs() -> &'static [RulePack] {
     &RULE_PACKS
 }
 
+/// A rule name this build has retired, and the active rule that answers for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleAlias {
+    /// The retired machine name retained for compatibility.
+    pub former: &'static str,
+    /// The active machine name that now owns the rule.
+    pub current: &'static str,
+}
+
+/// Empty: no shipped rule has ever been renamed.
+const RULE_ALIASES: [RuleAlias; 0] = [];
+
+/// Returns the compatibility ledger that makes rule renames observable.
+///
+/// Renaming a rule is a breaking change, so its former name keeps resolving for
+/// at least one minor cycle. An entry is added in the same commit as the rename
+/// and removed no earlier than the next major release.
+pub fn rule_aliases() -> &'static [RuleAlias] {
+    &RULE_ALIASES
+}
+
 /// Advisory remediation attached to a rule. This is rule metadata only: the
 /// scanner never follows a URL or acts on a finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +231,15 @@ pub struct Explanation {
     pub rotation: RotationGuidance,
 }
 
+/// A rule name the user supplied, resolved against the active rule set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    /// The active name that can be used for metadata and matching.
+    pub name: String,
+    /// The supplied retired name, when the caller needs to warn about it.
+    pub former: Option<String>,
+}
+
 /// The compiled rule set: built-in provider patterns, the user's extra patterns,
 /// and the allowlist that suppresses both.
 #[derive(Debug, Default)]
@@ -222,6 +252,8 @@ pub struct Rules {
     /// Things the caller should tell the user about the rule set itself, such as
     /// a configuration flag that does nothing. Never contains a value.
     pub notes: Vec<String>,
+    /// Retired rule names and the active rules they resolve to: `(former, current)`.
+    pub aliases: Vec<(String, String)>,
     rules: Vec<Rule>,
     allowlist: Vec<Regex>,
 }
@@ -275,6 +307,34 @@ impl Rules {
                 check: None,
             });
         }
+        let mut aliases: Vec<(String, String)> = rule_aliases()
+            .iter()
+            .map(|alias| (alias.former.to_string(), alias.current.to_string()))
+            .collect();
+        // Alias validation waits until every custom rule exists because a former
+        // name must never make an exact active-name lookup ambiguous.
+        for pattern in &config.patterns {
+            let name = pattern.name.trim();
+            for former_name in &pattern.former_names {
+                let former = former_name.trim();
+                if former.is_empty() {
+                    return Err(format!("pattern `{name}` has an empty former name").into());
+                }
+                if rules.iter().any(|rule| rule.name == former) {
+                    return Err(format!(
+                        "pattern `{name}`: former name `{former}` is also an active rule name"
+                    )
+                    .into());
+                }
+                if let Some((_, first)) = aliases.iter().find(|(claimed, _)| claimed == former) {
+                    return Err(format!(
+                        "former name `{former}` is claimed by both `{first}` and `{name}`"
+                    )
+                    .into());
+                }
+                aliases.push((former.to_string(), name.to_string()));
+            }
+        }
 
         let mut allowlist = Vec::with_capacity(config.allowlist.len());
         for entry in &config.allowlist {
@@ -293,6 +353,7 @@ impl Rules {
             names,
             packs,
             notes,
+            aliases,
             rules,
             allowlist,
         })
@@ -306,9 +367,33 @@ impl Rules {
             names,
             packs,
             notes: Vec::new(),
+            aliases: rule_aliases()
+                .iter()
+                .map(|alias| (alias.former.to_string(), alias.current.to_string()))
+                .collect(),
             rules,
             allowlist: Vec::new(),
         }
+    }
+
+    /// Resolves a supplied rule name, following one rename. `None` when no
+    /// active rule answers for it.
+    pub fn resolve(&self, name: &str) -> Option<Resolved> {
+        if self.rules.iter().any(|rule| rule.name == name) {
+            return Some(Resolved {
+                name: name.to_string(),
+                former: None,
+            });
+        }
+        self.aliases
+            .iter()
+            .find(|(former, current)| {
+                former == name && self.rules.iter().any(|rule| rule.name == *current)
+            })
+            .map(|(_, current)| Resolved {
+                name: current.clone(),
+                former: Some(name.to_string()),
+            })
     }
 
     /// Returns the metadata and rationale for one exact machine name.
@@ -319,11 +404,13 @@ impl Rules {
             .map(explanation_of)
     }
 
-    /// Returns advisory rotation metadata for one exact machine name.
+    /// Returns advisory rotation metadata after resolving a retired machine name,
+    /// so stored findings keep their remediation advice across a rule rename.
     pub fn rotation_guidance(&self, name: &str) -> Option<RotationGuidance> {
+        let resolved = self.resolve(name)?;
         self.rules
             .iter()
-            .find(|rule| rule.name == name)
+            .find(|rule| rule.name == resolved.name)
             .map(|rule| rule.rotation)
     }
 
