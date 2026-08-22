@@ -399,7 +399,7 @@ malformed one prints a warning and falls back to the defaults rather than taking
 | `env_assignments` | `true` | The `.env`-style assignment heuristic (`FOO_TOKEN=…`). Reports at weak confidence, with its own badge token. |
 | `rule_packs` | `["default"]` | Compiled-in rule packs to add. The `default` pack is always active; `[]` therefore means default only, never no scanning. Unknown names produce a note and are ignored. |
 | `notify` | `true` | Post a herdr toast for a new finding. Rate limited to one per rule per pane per watcher run regardless. |
-| `patterns` | `[]` | Your own rules. Each is `{ name, regex, label?, strong? }`; `strong` defaults to `true`. |
+| `patterns` | `[]` | Your own rules. Each is `{ name, regex, label?, strong?, former_names? }`; `strong` defaults to `true`. |
 | `allowlist` | `[]` | Regexes that suppress a finding. A finding is dropped when one matches either the value or the line it was found on. |
 | `ignore_panes` | `[]` | Pane ids never read at all. The escape hatch for a pane that is deliberately full of test credentials. |
 | `max_findings` | `500` | Cap on stored findings, so one pathological pane cannot grow the state file without bound. Oldest acknowledged findings are dropped first. |
@@ -425,7 +425,8 @@ not worth being told about:
       "name": "internal_session_hint",
       "label": "Internal session id",
       "regex": "\\bsess-[0-9a-f]{16}\\b",
-      "strong": false
+      "strong": false,
+      "former_names": ["internal_session_id"]
     }
   ],
   "allowlist": [
@@ -441,6 +442,17 @@ A `patterns` entry whose regex does not compile is a hard error from `redact --r
 you are looking right at it, and a rule silently dropped is a rule you think is protecting you. Every
 scanning path, on the other hand, falls back to the built-in rules and says so in its notes, because
 one bad line in a config file must not be able to stop the scanner.
+
+A `patterns` entry may also list `former_names`: the names that rule used to
+have. A rule name is what the state file, `--explain`, and the `pattern` and
+`ruleId` fields of the JSON and SARIF output key on, so renaming a rule you have
+been suppressing values under would otherwise bring every one of those values
+straight back. A stored suppression or finding that names a former name is
+rewritten to the current name, and the rename is reported — on stderr by
+`--rules` and `--explain`, and in the scan notes that reach the findings pane —
+so a configuration naming the old name keeps working while telling you to update
+it. A former name that is blank, or that collides with a rule that is actually
+active, is a hard error rather than an ambiguous lookup.
 
 `redact --rules` prints the base rule set. Pass a current pane id
 (`redact --rules w1:p2`) or a working-directory path
@@ -549,7 +561,8 @@ when the history you want to measure is older than the configured limit.
 
 ## Detection rules
 
-Each rule is `name` (what the allowlist and `--rules` use) and a confidence. Strong findings light
+Each rule is `name` — what the state file, `--explain`, and the JSON and SARIF output key on — and a
+confidence. Strong findings light
 `redact_secret`; weak ones light `redact_weak`.
 
 `redact --explain <rule>` also prints advisory rotation guidance. For provider-specific rules this is
@@ -559,7 +572,9 @@ does not identify who issued it; `--explain` says that explicitly instead of gue
 
 Every built-in rule belongs to a named, versioned pack. The `default` pack at version 1 is the exact
 rule set that shipped before packs: configuring another pack only adds rules and never removes a
-default rule. Rule names are stable public interface and never change between packs. The compiled-in
+default rule. Rule names are stable public interface: a rename happens only in a major release, and
+the old name resolves to the new rule for at least one minor cycle, reported every time it is used.
+The compiled-in
 `narrow` pack at version 1 is intentionally empty today; it is the seam for future precise formats
 whose relevance is too specialized for every user, without demoting any protection already in the
 default set. `redact --rules` appends each rule's pack and version after the existing name and
@@ -613,7 +628,7 @@ Precision is the product, so several obvious candidates are left out on purpose:
   JSON `alg` field.
 - **Postgres and MySQL connection URLs as a separate rule.** URLs carrying a password are already
   reported, at weak confidence, under `url_credentials`. A second strong rule would rename what users
-  already see and break allowlists that key on the old name.
+  already see, and break every stored suppression and every export consumer that keys on the old name.
 - **Legacy Vault `s.` tokens.** A two-character prefix, one character of which is a full stop, cannot
   support a strong claim. Only the modern `hvs.`, `hvb.`, and `hvr.` forms are matched.
 - **Multi-line joins starting at bare `auth`.** `auth` does not pass the secret-name filter: widening

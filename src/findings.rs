@@ -307,6 +307,107 @@ impl Store {
         &self.suppressions
     }
 
+    /// Rewrites stored rule names after a rename so a permanently dismissed
+    /// value cannot be resurrected and an acknowledged finding cannot notify
+    /// the user again. Returns the number of records rewritten or dropped.
+    pub fn honour_renames(&mut self, rules: &crate::scan::Rules) -> usize {
+        let unchanged_suppressions: HashSet<(String, u64)> = self
+            .suppressions
+            .iter()
+            .filter_map(|suppression| {
+                let resolved = rules.resolve(&suppression.rule)?;
+                (resolved.name == suppression.rule)
+                    .then(|| (suppression.rule.clone(), suppression.digest))
+            })
+            .collect();
+        let mut rewritten_suppressions = HashSet::new();
+        let mut suppressions = Vec::with_capacity(self.suppressions.len());
+        let mut renames = Vec::new();
+        let mut changed = 0;
+
+        for mut suppression in self.suppressions.drain(..) {
+            let Some(resolved) = rules.resolve(&suppression.rule) else {
+                suppressions.push(suppression);
+                continue;
+            };
+            if resolved.name == suppression.rule {
+                suppressions.push(suppression);
+                continue;
+            }
+
+            let former = std::mem::replace(&mut suppression.rule, resolved.name);
+            if !renames
+                .iter()
+                .any(|(old, new)| old == &former && new == &suppression.rule)
+            {
+                renames.push((former, suppression.rule.clone()));
+            }
+            changed += 1;
+
+            let key = (suppression.rule.clone(), suppression.digest);
+            if !unchanged_suppressions.contains(&key) && rewritten_suppressions.insert(key) {
+                suppressions.push(suppression);
+            }
+        }
+        self.suppressions = suppressions;
+
+        let mut index = 0;
+        while index < self.findings.len() {
+            let Some(resolved) = rules.resolve(&self.findings[index].pattern) else {
+                index += 1;
+                continue;
+            };
+            if resolved.name == self.findings[index].pattern {
+                index += 1;
+                continue;
+            }
+
+            let former = self.findings[index].pattern.clone();
+            let current = resolved.name;
+            let new_id = Finding::fingerprint(
+                &current,
+                &self.findings[index].pane_id,
+                self.findings[index].digest,
+            );
+            if !renames
+                .iter()
+                .any(|(old, new)| old == &former && new == &current)
+            {
+                renames.push((former, current.clone()));
+            }
+            changed += 1;
+
+            let survivor = self
+                .findings
+                .iter()
+                .enumerate()
+                .find_map(|(candidate, finding)| {
+                    (candidate != index && finding.id == new_id).then_some(candidate)
+                });
+            if let Some(survivor) = survivor {
+                if self.findings[index].acknowledged {
+                    self.findings[survivor].acknowledged = true;
+                }
+                self.findings.remove(index);
+            } else {
+                self.findings[index].pattern = current;
+                self.findings[index].id = new_id;
+                index += 1;
+            }
+        }
+
+        if changed > 0 {
+            self.apply_suppressions_to_findings();
+            for (former, current) in renames {
+                self.push_note(format!(
+                    "the stored rule name `{former}` was renamed to `{current}`; update anything \
+                     that still keys on `{former}`"
+                ));
+            }
+        }
+        changed
+    }
+
     /// Acknowledges everything outstanding. Returns how many findings changed,
     /// so acknowledging an already-quiet store reports zero rather than lying.
     pub fn acknowledge_all(&mut self) -> usize {

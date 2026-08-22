@@ -36,8 +36,13 @@ const _: () = assert!((MAX_INTERVAL_SECONDS + 120).saturating_mul(3_000) <= MAX_
 /// One user-supplied rule from the config file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
 pub struct CustomPattern {
-    /// Machine name, used by the allowlist and by notification rate limiting.
+    /// Machine name used by persisted findings and suppressions, the per-run
+    /// notification limiter, `--explain`, and JSON `pattern`/SARIF `ruleId` fields.
     pub name: String,
+    /// Names this pattern used to have, so a stored suppression or `--explain`
+    /// query using one keeps working and reports that it is out of date.
+    #[serde(default)]
+    pub former_names: Vec<String>,
     /// Rust `regex` syntax. Compiled by `scan::Rules::compile`, which reports a
     /// bad one rather than dropping it silently.
     pub regex: String,

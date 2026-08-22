@@ -370,6 +370,9 @@ pub fn scan_cycle_within(
     // different overlays therefore cannot leak a rule set across panes.
     let base_config = config.base();
     let base_rules = rules_for_scan(&base_config, &mut notes);
+    // This is the first place the rule set that defines the renames exists, so
+    // persisted state is migrated before any new observation can use it.
+    store.honour_renames(&base_rules);
     let mut rule_sets = HashMap::from([(base_config, base_rules)]);
 
     // A findings pane that scans itself reports its own masked previews for
@@ -433,6 +436,7 @@ pub fn scan_cycle_within(
             rules
         } else {
             let compiled = rules_for_scan(effective, &mut notes);
+            store.honour_renames(&compiled);
             rule_sets.entry(effective.clone()).or_insert(compiled)
         };
         let text = match client.read_pane(&pane.pane_id, lines) {

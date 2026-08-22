@@ -5,12 +5,39 @@ Notable changes to redact. Dates are ISO-8601.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-**Detection rule names are part of the public interface.** The allowlist and the
-notification rate limiter key on them, so renaming one is a breaking change and
-will only happen in a major release, with the old name accepted as an alias for
-at least one minor cycle.
+**Detection rule names are part of the public interface.** The state file keys
+its findings and its permanent suppressions on them, `redact --explain` takes
+one, and they are the `pattern` and `ruleId` fields of the JSON and SARIF
+output, so renaming one is a breaking change and will only happen in a major
+release, with the old name accepted as an alias for at least one minor cycle.
 
 ## [Unreleased]
+
+### Added
+
+- Rule name aliases, so the promise above can be kept rather than only made. A
+  rule may now carry former names: a compiled-in rename ledger covers the
+  built-in rules, and a `patterns` entry may list its own `former_names` for a
+  team that renames an internal format. The ledger is empty today because no
+  shipped rule has ever been renamed, which is the point — the mechanism has to
+  exist before the rename, not after it. A stored suppression or finding that
+  names a retired rule is rewritten to the current name, so a rename cannot
+  resurrect a value someone dismissed for good or re-notify a finding they had
+  already acknowledged, and `redact --explain <former-name>` answers for the
+  rule that replaced it. Every use of a retired name is reported — `--rules`
+  and `--explain` say so on stderr, and the scan notes carry it into the
+  findings pane — because a configuration that keeps working in silence is one
+  nobody ever updates.
+
+### Fixed
+
+- The note above these release sections named the allowlist and the
+  notification rate limiter as the things that key on a rule name. Neither
+  does: an allowlist entry is a regex matched against the value or the line it
+  was found on, and the rate limiter lives for one watcher run, so no rename
+  can outlive it. The note now names what really keys on a rule name — the
+  state file, `--explain`, and the `pattern` and `ruleId` fields of the JSON
+  and SARIF output — and the promise it makes is implemented.
 
 ## [0.1.1] - 2026-08-18
 
