@@ -1266,11 +1266,11 @@ fn is_grafana_service_account_token(caps: &Captures<'_>) -> bool {
         return false;
     };
     let checksum_bytes = crc32_ieee(payload.as_bytes()).to_le_bytes();
-    let mut encoded = [0u8; 8];
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    for (byte, pair) in checksum_bytes.iter().zip(encoded.chunks_exact_mut(2)) {
-        pair[0] = HEX[usize::from(byte >> 4)];
-        pair[1] = HEX[usize::from(byte & 0x0f)];
+    let mut encoded = [0u8; 8];
+    for (index, byte) in checksum_bytes.iter().enumerate() {
+        encoded[index * 2] = HEX[usize::from(byte >> 4)];
+        encoded[index * 2 + 1] = HEX[usize::from(byte & 0x0f)];
     }
     checksum.as_bytes() == encoded.as_slice()
 }
