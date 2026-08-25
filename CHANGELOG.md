@@ -100,6 +100,36 @@ release, with the old name accepted as an alias for at least one minor cycle.
   says tokens "will likely increase in length in future updates, so integrators
   should plan to support tokens up to 255 characters", so the pinned widths were
   a future silent discard of exactly the npm shape.
+- Corrected the ledger entries whose recorded reason no longer holds. The ledger
+  of declined formats is the more useful half of the rule catalogue, which makes
+  an entry with a wrong reason worse than no entry at all: it stops the next
+  person looking. A research pass found provider-controlled evidence
+  contradicting several, and each is now corrected in place, saying what the new
+  evidence is and why the format is declined *today* rather than why it was
+  declined once.
+  - The five remaining legacy GitLab entries recorded "no provider-controlled
+    source". GitLab is open source: `Devise.friendly_token` is 20 characters
+    excluding `l`, `I`, `O`, and `0`, `gloas-` is `SecureRandom.hex(32)`, and
+    GitLab ships its own detection table in-product. They stay declined for a
+    narrower and true reason — they are the legacy, checksumless shape that
+    GitLab's own RuboCop cop is replacing with the routable tokens this release
+    verifies.
+  - `dop_v1_` and `doo_v1_` are partly overturned: `doctl` sets
+    `v1TokenLength = 71` and validates it, with tests rejecting 63 and 66, which
+    fixes the body at exactly 64. Only the charset is still unstated, and that
+    gap is now the whole reason. `dor_v1_` has no such validation and its entry
+    says so.
+  - Grafana Cloud's `glc_` was recorded as a marker that "names a token and is
+    not part of the secret value". It is the literal opening of the value:
+    Grafana's own Cloud API documentation shows `"token": "glc_eyJrIjoi…"`, and
+    the body base64-decodes to JSON carrying a 40-character hexadecimal key.
+  - Terraform Cloud's `.atlasv1.` was declined for being an infix rather than a
+    prefix, which is not a reason — an infix costs nothing in a regex. The
+    entry now says revisit, and names the real gap: HashiCorp publishes sample
+    tokens rather than a specification.
+  - Netlify's entry claimed no provider-assigned prefix at all; `nfp_` exists in
+    Netlify's own repository. The decline stands, because a prefix on its own is
+    not a structure, and the entry now carries the marker it was missing.
 
 ### Changed
 
