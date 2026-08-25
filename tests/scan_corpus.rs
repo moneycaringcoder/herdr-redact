@@ -241,6 +241,15 @@ const POSITIVE: &[Vector] = &[
         value: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1gg==",
         preview: "EEEE\u{2026}gg==",
     },
+    // The Azure Storage signature `+ASt` with the checksum Azure's own generator
+    // produces for a body of zero bytes: valid, and obviously not a real key.
+    Vector {
+        rule: "azure_identifiable_key",
+        confidence: Confidence::Strong,
+        text: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvzw==",
+        value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvzw==",
+        preview: "AAAA\u{2026}zw==",
+    },
     Vector {
         rule: "jdbc_url_password",
         confidence: Confidence::Strong,
@@ -485,6 +494,8 @@ CASK-shaped key with a tampered checksum: EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
 CASK-shaped key in the short form with a tampered checksum: EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4aka
 jdbc:postgresql://db.invalid/app?password=${DB_PASS}
 jdbc:mysql://db.invalid/app;password=changeme
+Azure-shaped identifiable key with a tampered checksum: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvza==
+Azure-shaped identifiable key with a tampered body: BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvzw==
 Generic URL query: https://db.invalid/app?password=FAKE_A1A1A1A1A1A1A1A1A1A1
 
 s. This ordinary sentence starts with an abbreviation.
@@ -941,6 +952,52 @@ fn microsoft_cask_key_validates_every_signature_family_in_both_forms() {
     ] {
         assert!(scan(key, &rules, &KEY).is_empty(), "matched {key}");
     }
+}
+
+#[test]
+fn azure_identifiable_key_validates_every_service_seed() {
+    let rules = builtin();
+    // One key per service signature and per checksum seed Microsoft's own
+    // validators try: Storage, Batch, Cosmos DB master read-write and read-only,
+    // ML Classic, and API Management's subscription, direct-management, gateway
+    // and repository keys.
+    for key in [
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvzw==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+ABaFflW/A==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACDb82KEzw==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACDbqWm0Ow==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AMCsO6UyQ==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPIMYHvqDw==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPIM23qhZw==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPIMB9vyOw==",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPIMVUXDXQ==",
+    ] {
+        // The trailing `==` counts as token continuation, so the pattern has to
+        // consume it or the standalone check discards the finding.
+        assert_eq!(key.len(), 88);
+        let matches = scan(key, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{key}: {matches:?}");
+        assert_eq!(matches[0].pattern, "azure_identifiable_key");
+        assert_eq!(matches[0].value_len, 88);
+    }
+
+    for key in [
+        // One character of the checksum.
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvza==",
+        // One character of the checksummed body.
+        "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AStvmNvzw==",
+        // A valid Storage key wearing the Batch signature: the signature is
+        // inside the checksummed bytes, so it fails rather than mislabelling.
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+ABavmNvzw==",
+        // Right shape, but the signature is not one this rule knows.
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAZEGvmNvzw==",
+    ] {
+        assert!(scan(key, &rules, &KEY).is_empty(), "matched {key}");
+    }
+
+    // Inside a longer base64 run it is a fragment, not a key.
+    let key = vector("azure_identifiable_key").text;
+    assert!(scan(&format!("QQ{key}"), &rules, &KEY).is_empty());
 }
 
 #[test]

@@ -29,6 +29,7 @@ const DEFAULT_RULES: &[(&str, Confidence)] = &[
     ("supabase_access_token", Confidence::Strong),
     ("sentry_auth_token", Confidence::Strong),
     ("microsoft_cask_key", Confidence::Strong),
+    ("azure_identifiable_key", Confidence::Strong),
     ("age_secret_key", Confidence::Strong),
     ("jdbc_url_password", Confidence::Strong),
     ("docker_registry_auth", Confidence::Strong),

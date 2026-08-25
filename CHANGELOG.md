@@ -63,6 +63,23 @@ release, with the old name accepted as an alias for at least one minor cycle.
   check counts as token continuation, so the pattern consumes that padding —
   otherwise every key of that length would have been found and then discarded,
   which is the shape the npm rule was fixed for.
+- A rule for Azure's 64-byte identifiable keys, `azure_identifiable_key`,
+  covering storage accounts, Batch accounts, Cosmos DB master keys, Azure ML
+  Classic web services, and API Management keys. `Azure64ByteIdentifiableKeys`
+  states the shape and `IdentifiableSecrets.ValidateChecksum` the check: the key
+  decodes to 64 bytes whose last four are a little-endian Marvin32 over the
+  first 60, with a seed per service taken from `IdentifiableMetadata`. Each
+  signature is tried against the same seeds Microsoft's own validators try, so a
+  Cosmos DB key validates as master read-write or read-only and an API
+  Management key as any of its four kinds. A key of the right shape with the
+  wrong checksum does not fire, and neither does a valid key wearing another
+  service's signature, because the signature sits inside the checksummed bytes.
+  This matters because it is exactly what `az storage account keys list` prints
+  and what follows `AccountKey=` in a connection string. Keys issued before the
+  identifiable-key rollout stay uncaught on purpose: they are shapeless base64
+  with no marker, and matching them would mean reporting every 88-character
+  base64 run. The `AccountKey=` ledger entry now says that, instead of recording
+  the value as opaque.
 
 ### Fixed
 

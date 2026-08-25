@@ -30,9 +30,10 @@ fn every_builtin_rule_has_an_explanation() {
 
 #[test]
 fn every_builtin_rule_has_a_url_or_an_audited_exemption() {
-    const EXEMPT_RULES: [&str; 11] = [
+    const EXEMPT_RULES: [&str; 12] = [
         "age_secret_key",
         "aws_principal_id",
+        "azure_identifiable_key",
         "docker_registry_auth",
         "env_assignment",
         "http_bearer_token",
