@@ -241,7 +241,32 @@ fn pane_body(pane_id: &str) -> String {
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .collect();
-    format!("$ cat .env\nGITHUB_TOKEN=ghp_EXAMPLEEXAMPLEEXAMPLE{tag:E<18}\n$ echo done\ndone\n")
+    let payload = format!("EXAMPLEEXAMPLEEXAMPLE{tag:E<12}");
+    let token = format!("ghp_{payload}{}", github_checksum(&payload));
+    format!("$ cat .env\nGITHUB_TOKEN={token}\n$ echo done\ndone\n")
+}
+
+/// GitHub's checksum, computed here rather than borrowed from the scanner: the
+/// last six characters of a token are the CRC-32 of everything before them,
+/// base62-encoded with the `0-9A-Za-z` alphabet. A fixture the scanner would
+/// reject as unchecksummed is a fixture that silently stops testing anything.
+fn github_checksum(payload: &str) -> String {
+    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut crc = !0u32;
+    for &byte in payload.as_bytes() {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    let mut remaining = !crc;
+    let mut encoded = [b'0'; 6];
+    for slot in encoded.iter_mut().rev() {
+        *slot = ALPHABET[(remaining % 62) as usize];
+        remaining /= 62;
+    }
+    String::from_utf8(encoded.to_vec()).expect("base62 output is ASCII")
 }
 
 fn reply_to(request: &Value, truncated: bool) -> String {

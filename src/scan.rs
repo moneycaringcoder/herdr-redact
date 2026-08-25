@@ -917,17 +917,23 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             r#"(?i)aws[_-]?secret[_-]?access[_-]?key["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})"#,
         )
         .groups(&[1]),
+        // The prefix alone is not evidence: anything of the right shape starting
+        // `ghp_` would fire. GitHub publishes that its tokens carry a CRC-32
+        // checksum in their last six characters, so the rule recomputes it and a
+        // right-shaped token with the wrong checksum stays quiet. See
+        // `is_github_token` for the payload boundary and alphabet.
         Rule::new(
             "github_token",
             "GitHub token",
             Confidence::Strong,
-            "Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 36 alphanumeric characters.",
+            "Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 36 alphanumeric characters, then verifies GitHub's own checksum: the last six characters must equal the CRC-32 of everything before them, base62-encoded with the `0-9A-Za-z` alphabet and left-padded with zeros. A string of the right shape with the wrong checksum does not fire, and the check is length-agnostic because GitHub states its tokens will grow.",
             RotationGuidance::Url(
                 "https://docs.github.com/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation",
             ),
             r"\bgh[pousr]_[A-Za-z0-9]{36,}",
         )
-        .standalone(),
+        .standalone()
+        .check(is_github_token),
         // GitHub's own token-format changelog says tokens "will likely increase
         // in length in future updates, so integrators should plan to support
         // tokens up to 255 characters". Both components are therefore floors:
@@ -1322,6 +1328,44 @@ fn crc32_ieee(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// GitHub tokens carry their own checksum, so the prefix does not have to be
+/// trusted on its own.
+///
+/// "Behind GitHub's new authentication token formats" describes "a 32 bit
+/// checksum in the last 6 digits of each token", computed with CRC-32 and
+/// "encode[d] … with a Base62 implementation, using leading zeros for padding
+/// as needed". The post states neither what is checksummed nor which base62
+/// alphabet, so both were derived and then verified against a circulating
+/// sample and a live token: the payload is every body character before the last
+/// six, and the alphabet is `0-9A-Za-z`.
+///
+/// Deliberately length-agnostic. GitHub says its tokens will grow, and a
+/// checksum that does not care how long the body is survives that while still
+/// rejecting everything that merely starts with the prefix.
+fn is_github_token(caps: &Captures<'_>) -> bool {
+    let Some(body) = caps[0].get(4..) else {
+        return false;
+    };
+    let Some(boundary) = body.len().checked_sub(6) else {
+        return false;
+    };
+    let (payload, checksum) = body.split_at(boundary);
+    base62_crc32(payload.as_bytes()).as_slice() == checksum.as_bytes()
+}
+
+/// CRC-32 of `bytes` in base62 with the `0-9A-Za-z` alphabet, left-padded with
+/// `0` to six digits. Six digits is always enough: 62⁶ exceeds `u32::MAX`.
+fn base62_crc32(bytes: &[u8]) -> [u8; 6] {
+    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut remaining = crc32_ieee(bytes);
+    let mut encoded = [b'0'; 6];
+    for slot in encoded.iter_mut().rev() {
+        *slot = ALPHABET[(remaining % 62) as usize];
+        remaining /= 62;
+    }
+    encoded
 }
 
 /// A JWT is only a JWT when its header segment base64url-decodes to a JSON

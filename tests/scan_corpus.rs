@@ -63,9 +63,9 @@ const POSITIVE: &[Vector] = &[
     Vector {
         rule: "github_token",
         confidence: Confidence::Strong,
-        text: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
-        value: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
-        preview: "ghp_\u{2026}wxyz",
+        text: "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",
+        value: "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",
+        preview: "ghp_\u{2026}70pI",
     },
     Vector {
         rule: "github_pat",
@@ -424,6 +424,7 @@ npm-shaped token with a 35-character body: npm_0123456789abcdefghijklmnopqrstuvw
 Supabase-shaped token with a 39-character body: sbp_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1
 Supabase-shaped token with an uppercase body: sbp_FA11FA11FA11FA11FA11FA11FA11FA11FA11FA11
 Sentry-shaped token with a 63-character body: sntryu_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1
+GitHub-shaped token with the wrong checksum: ghp_0123456789abcdefghijklmnopqrst3j70pJ
 
 Not a token: eyJZZZZZZZZZZZZ.aaaaaaaaaaaaaa.bbbbbbbbbbbbbb
 Also not a token: eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.ZmFrZXNpZ25hdHVyZQ
@@ -753,6 +754,38 @@ fn jwt_needs_a_header_that_decodes_to_json_with_alg() {
 }
 
 #[test]
+fn github_token_requires_its_checksum_at_any_length() {
+    let rules = builtin();
+    // The committed vector's own checksum, one character off.
+    assert!(scan("ghp_0123456789abcdefghijklmnopqrst3j70pJ", &rules, &KEY).is_empty());
+    // Right shape, right prefix, checksum of nothing in particular.
+    assert!(scan("ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE01", &rules, &KEY).is_empty());
+
+    let matches = scan(vector("github_token").text, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "github_token");
+
+    // Length-agnostic: GitHub says tokens will grow, so a 46-character body
+    // with a correct checksum reports just as the 36-character one does.
+    let longer = "ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMP01nHNs";
+    let matches = scan(longer, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].value_len, longer.chars().count());
+
+    // Every prefix the rule claims, each with its own valid checksum.
+    for token in [
+        "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",
+        "ghu_UUUUUUUUUUUUUUUUUUUUUUUUUUUUUU1mtYVh",
+        "ghs_SSSSSSSSSSSSSSSSSSSSSSSSSSSSSS3nRZfn",
+        "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",
+    ] {
+        let matches = scan(token, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{token}: {matches:?}");
+        assert_eq!(matches[0].pattern, "github_token");
+    }
+}
+
+#[test]
 fn grafana_service_account_token_requires_its_checksum() {
     let rules = builtin();
     assert!(scan(
@@ -862,8 +895,8 @@ fn provider_prefixes_inside_a_longer_token_are_ignored() {
     // Each of these is a real prefix embedded in a longer base64 run, which is
     // what a pasted image or an encoded payload looks like.
     for text in [
-        "Qm2ghp_0123456789abcdefghijklmnopqrstuvwxyz",
-        "ghp_0123456789abcdefghijklmnopqrstuvwxyz+more",
+        "Qm2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",
+        "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+more",
         "xxAKIAIOSFODNN7EXAMPLE",
         "AKIAIOSFODNN7EXAMPLE0",
         "AIza0123456789abcdefghijklmnopqrstuvwxy=",
@@ -1139,7 +1172,7 @@ fn a_masked_preview_is_never_the_whole_value() {
 #[test]
 fn line_numbers_are_one_based_and_survive_blank_lines() {
     let rules = builtin();
-    let token = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    let token = "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";
 
     let first = scan(&format!("{token}\nsecond line\nthird line"), &rules, &KEY);
     assert_eq!(first[0].line, 1);
@@ -1231,7 +1264,7 @@ fn overlapping_matches_keep_the_stronger_rule() {
     let rules = builtin();
     // The assignment heuristic and the GitHub rule both cover the value.
     let matches = scan(
-        "GITHUB_TOKEN=ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        "GITHUB_TOKEN=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",
         &rules,
         &KEY,
     );
@@ -1365,13 +1398,13 @@ fn a_malformed_allowlist_entry_is_a_hard_error_that_names_it() {
 fn the_allowlist_suppresses_a_finding_by_its_value() {
     let config = config_with(
         Vec::new(),
-        vec!["0123456789abcdefghijklmnopqrstuvwxyz".to_string()],
+        vec!["0123456789abcdefghijklmnopqrst3j70pI".to_string()],
     );
     let rules = Rules::compile(&config).expect("compiles");
     assert!(scan(vector("github_token").text, &rules, &KEY).is_empty());
     // A different value from the same rule still reports.
     assert_eq!(
-        scan("ghp_zzzz456789abcdefghijklmnopqrstuvwxyz", &rules, &KEY).len(),
+        scan("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", &rules, &KEY).len(),
         1
     );
 }
@@ -1462,7 +1495,7 @@ fn a_one_megabyte_line_scans_quickly_and_still_finds_the_token() {
         text.push_str("0f8a2c4e6b1d3f5a7c9e0b2d4f6a8c1e3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a");
     }
     text.push(' ');
-    text.push_str("ghp_0123456789abcdefghijklmnopqrstuvwxyz");
+    text.push_str("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");
 
     let started = Instant::now();
     let matches = scan(&text, &rules, &KEY);
@@ -1532,7 +1565,7 @@ fn a_flood_of_weak_matches_neither_starves_a_strong_rule_nor_passes_in_silence()
     for index in 0..2_100 {
         text.push_str(&format!("AROAZ3MXVX7QJH2W{index:04}\n"));
     }
-    text.push_str("ghp_0123456789abcdefghijklmnopqrstuvwxyz\n");
+    text.push_str("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\n");
 
     let scanned = scan_reporting(&text, &rules, &KEY);
     assert!(

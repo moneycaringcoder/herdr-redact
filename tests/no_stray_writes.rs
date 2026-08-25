@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 const PANE_OUTPUT: &str = "\
 $ cat .env
 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-GITHUB_TOKEN=ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE01
+GITHUB_TOKEN=ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXA4c75gp
 $ cargo build --release
     Finished `release` profile [optimized] target(s) in 9.42s
 ";
