@@ -31,7 +31,7 @@ const SNAPSHOT_FIXTURE: &str = include_str!("fixtures/session_snapshot.json");
 const READ_FIXTURE: &str = include_str!("fixtures/pane_read.json");
 /// Captured from a live pane running `curl`; the full response envelope is kept.
 const PROCESS_FIXTURE: &str = include_str!("fixtures/pane_process_info.json");
-const PROCESS_CREDENTIAL: &str = "ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE01";
+const PROCESS_CREDENTIAL: &str = "ghp_EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXA4c75gp";
 
 /// `HERDR_SOCKET_PATH` and `HERDR_PLUGIN_ID` are process-global, so the tests
 /// that set them have to run one at a time even though cargo runs them on

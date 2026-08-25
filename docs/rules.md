@@ -76,7 +76,7 @@ Matches exactly 40 base64 characters only beside the AWS secret access key name,
 - **Pack:** `default` version 1
 - **Rotation guidance:** https://docs.github.com/authentication/keeping-your-account-and-data-secure/token-expiration-and-revocation
 
-Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 36 alphanumeric characters.
+Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 36 alphanumeric characters, then verifies GitHub's own checksum: the last six characters must equal the CRC-32 of everything before them, base62-encoded with the `0-9A-Za-z` alphabet and left-padded with zeros. A string of the right shape with the wrong checksum does not fire, and the check is length-agnostic because GitHub states its tokens will grow.
 
 ## `github_pat`
 

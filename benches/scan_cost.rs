@@ -31,7 +31,37 @@ const KEY: DigestKey = [
 ];
 const ONE_MIB: usize = 1024 * 1024;
 const MINIMUM_CYCLE_BUDGET: Duration = Duration::from_secs(30);
-const SYNTHETIC_GITHUB_TOKEN: &str = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+/// The body of the synthetic token, without the checksum GitHub's format
+/// requires. Kept apart from its checksum so the benchmark holds no complete
+/// token: the rule verifies GitHub's checksum, so a complete one would be a
+/// structurally valid credential sitting in the repository, and this file — a
+/// timing harness — is no place for one.
+const SYNTHETIC_GITHUB_BODY: &str = "0123456789abcdefghijklmnopqrst";
+
+/// The synthetic token, assembled with the checksum GitHub's format requires:
+/// the last six characters are the CRC-32 of everything before them, base62
+/// with the `0-9A-Za-z` alphabet. Computed here rather than borrowed from the
+/// scanner, so a benchmark that stopped finding anything would show up as a
+/// failed expectation instead of a suspiciously fast scan.
+fn synthetic_github_token() -> String {
+    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut crc = !0u32;
+    for &byte in SYNTHETIC_GITHUB_BODY.as_bytes() {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    let mut remaining = !crc;
+    let mut checksum = [b'0'; 6];
+    for slot in checksum.iter_mut().rev() {
+        *slot = ALPHABET[(remaining % 62) as usize];
+        remaining /= 62;
+    }
+    let checksum = std::str::from_utf8(&checksum).expect("base62 output is ASCII");
+    format!("ghp_{SYNTHETIC_GITHUB_BODY}{checksum}")
+}
 
 #[derive(Clone, Copy)]
 enum Expectation {
@@ -160,13 +190,14 @@ fn clean_pane(lines: usize, seed: u64) -> String {
 fn sparse_pane(lines: usize, seed: u64) -> String {
     let mut text = String::with_capacity(lines * 96);
     let mut generator = Lcg(seed);
+    let token = synthetic_github_token();
     for line in 0..lines {
         if (line + 1).is_multiple_of(500) {
             // This is the provider's documented EXAMPLE-shaped token style,
             // never a credential copied from an environment or account.
             let result = writeln!(
                 text,
-                "agent@pane-{:02}:/workspace/project$ export GITHUB_TOKEN={SYNTHETIC_GITHUB_TOKEN}",
+                "agent@pane-{:02}:/workspace/project$ export GITHUB_TOKEN={token}",
                 generator.next() % 64,
             );
             if let Err(error) = result {
@@ -200,7 +231,8 @@ fn matchy_pane(lines: usize, seed: u64) -> String {
 }
 
 fn one_megabyte_line(seed: u64) -> String {
-    let body_bytes = ONE_MIB - SYNTHETIC_GITHUB_TOKEN.len() - 1;
+    let token = synthetic_github_token();
+    let body_bytes = ONE_MIB - token.len() - 1;
     let mut text = String::with_capacity(ONE_MIB);
     let mut generator = Lcg(seed);
     text.push_str("| ");
@@ -214,7 +246,7 @@ fn one_megabyte_line(seed: u64) -> String {
     }
     text.truncate(body_bytes);
     text.push(' ');
-    text.push_str(SYNTHETIC_GITHUB_TOKEN);
+    text.push_str(&token);
     text
 }
 

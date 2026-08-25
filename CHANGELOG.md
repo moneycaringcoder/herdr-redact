@@ -53,6 +53,21 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Changed
 
+- The GitHub token rule verifies GitHub's checksum instead of trusting the
+  prefix. It matched a prefix and a length, so anything of the right shape
+  starting `ghp_` fired. GitHub describes the design in "Behind GitHub's new
+  authentication token formats" — "a 32 bit checksum in the last 6 digits of
+  each token", CRC-32, "encode[d] … with a Base62 implementation, using leading
+  zeros for padding as needed" — but states neither what is checksummed nor
+  which alphabet, so both were derived and then verified against a circulating
+  sample and against a live token, of which only a boolean was ever printed: the
+  payload is every body character before the last six, and the alphabet is
+  `0-9A-Za-z`. The check is deliberately length-agnostic, because GitHub says
+  its tokens will grow and a checksum that does not care about length survives
+  that. Every GitHub vector in the suite was regenerated to satisfy the
+  structure while staying obviously fake, and a wrong-checksum token is now a
+  negative-corpus entry — the same free precision test the Grafana rule already
+  had.
 - The remaining exact-length rules were audited for the same discard shape, and
   the finding is recorded here rather than left implicit. Every one of them is
   silent on an over-long body, so the question is only whether the provider

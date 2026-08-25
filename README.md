@@ -602,7 +602,7 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `aws_access_key_id` | `AKIA` or `ASIA` plus 16 base32 characters | strong |
 | `aws_secret_access_key` | 40 base64 characters, but only next to the key name AWS itself uses | strong |
 | `aws_principal_id` | `AROA`, `AIDA`, `AGPA`, `ANPA`, `ANVA`, `AIPA`, `APKA` plus 16 | weak |
-| `github_token` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | strong |
+| `github_token` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` tokens whose own checksum matches | strong |
 | `github_pat` | fine-grained `github_pat_…` | strong |
 | `anthropic_api_key` | `sk-ant-…` | strong |
 | `openai_api_key` | `sk-proj-`, `sk-svcacct-`, `sk-admin-`, or `sk-` plus 48 characters | strong |
