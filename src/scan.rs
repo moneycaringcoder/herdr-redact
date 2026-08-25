@@ -1156,6 +1156,31 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             r"\bsntry[aiu]_[0-9a-f]{64}",
         )
         .standalone(),
+        // Microsoft publishes both the pattern and the checksum for its Common
+        // Annotated Security Keys, which cover Azure AI and OpenAI services, App
+        // Configuration, Azure DevOps personal access tokens, Event Grid, Maps
+        // and Communication Services. The pattern is
+        // `IdentifiableSecrets.CommonAnnotatedKeyRegexPattern`; the layout and
+        // offsets are `LegacyCommonAnnotatedSecurityKey`, where the checksum
+        // starts at encoded character 80.
+        //
+        // The optional trailing group is not decoration. The 88-character form
+        // ends `==`, `continues_token_after` counts `=` as token continuation,
+        // and a match that stopped at character 84 would be discarded by the
+        // standalone check — a key found and thrown away, the npm shape. The
+        // regex consumes the padding, exactly as Microsoft's own pattern does.
+        Rule::new(
+            "microsoft_cask_key",
+            "Microsoft common annotated security key",
+            Confidence::Strong,
+            "Matches Microsoft's common annotated security key layout — 52 base64 characters, the `JQQJ9` marker at offset 52, a key-kind character, an allocation date, reserved bytes, a four-character provider signature, and a checksum — then recomputes that checksum: Marvin32 over the first 60 decoded bytes, seeded from Microsoft's `Default0` literal, rendered in base62 and re-canonicalised as base64. A key of exactly the right shape with the wrong checksum does not fire. Both the 84-character and the 88-character forms are covered, and the trailing base64 padding of the longer form is consumed so the finding is not discarded as part of a longer token. The provider signature only selects which service the key belongs to.",
+            RotationGuidance::Exempt(
+                "A common annotated key can come from any of a dozen Azure services, and only its four-character provider signature says which; rotate it in the portal for that resource.",
+            ),
+            r"\b[A-Za-z0-9]{52}JQQJ9[9DH][A-Za-z0-9][A-L][A-Za-z0-9]{16}[A-Za-z][A-Za-z0-9]{7}(?:[A-Za-z0-9]{2}==)?",
+        )
+        .standalone()
+        .check(is_microsoft_cask_key),
         // The private half of an age keypair. The public half — `age1…`, the
         // recipient — is printed by `age-keygen` next to this one, appears in
         // every `.sops.yaml` and in every README that explains age, and is not
@@ -1424,6 +1449,111 @@ fn base36_crc32(bytes: &[u8]) -> [u8; 7] {
 /// value belongs to `gitlab_routable_token`, which can verify it.
 fn is_legacy_gitlab_pat(caps: &Captures<'_>) -> bool {
     caps.get(1).is_none()
+}
+
+/// A Microsoft common annotated security key carries a Marvin32 checksum in the
+/// characters after offset 80.
+///
+/// `IdentifiableSecrets.TryValidateCommonAnnotatedKey` checksums the first 60
+/// decoded bytes — the encoded characters before the checksum — with the seed
+/// `ComputeHisV1ChecksumSeed("Default0")`, then compares the encoded checksum
+/// against the generator's rendering. The 84-character form carries four of
+/// those six characters and the 88-character form all six, so a prefix
+/// comparison covers both.
+fn is_microsoft_cask_key(caps: &Captures<'_>) -> bool {
+    // `ComputeHisV1ChecksumSeed("Default0")`: the ASCII bytes of the literal,
+    // reversed, read as a little-endian `u64`.
+    const SEED: u64 = 0x4465_6661_756c_7430;
+    let value = &caps[0];
+    let (Some(encoded), Some(checksum)) = (value.get(..80), value.get(80..)) else {
+        return false;
+    };
+    let observed = checksum.trim_end_matches('=');
+    if observed.is_empty() {
+        return false;
+    }
+    let Some(bytes) = base64_decode(encoded) else {
+        return false;
+    };
+    cask_checksum_text(&bytes, SEED).starts_with(observed.as_bytes())
+}
+
+/// The checksum text Microsoft's generator writes into a common annotated key.
+///
+/// `GetBase62EncodedChecksum` renders the four checksum bytes in base62, pads
+/// the text to six characters with trailing zeros, and then hands it to a base64
+/// encoder — which zeroes the four bits the sixth character does not carry. That
+/// last step is why the text has to be canonicalised rather than compared raw.
+fn cask_checksum_text(bytes: &[u8], seed: u64) -> [u8; 6] {
+    const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // `BitConverter.GetBytes` writes the checksum little-endian, and the base62
+    // encoder then reads that byte array most significant byte first.
+    let mut remaining = u32::from_be_bytes(marvin32(bytes, seed).to_le_bytes());
+    let mut digits = [b'0'; 6];
+    let mut count = 0;
+    while remaining > 0 {
+        digits[count] = BASE62[(remaining % 62) as usize];
+        remaining /= 62;
+        count += 1;
+    }
+    let mut text = [b'0'; 6];
+    for (slot, &digit) in text.iter_mut().zip(digits[..count].iter().rev()) {
+        *slot = digit;
+    }
+    let last = BASE64
+        .iter()
+        .position(|&digit| digit == text[5])
+        .unwrap_or(0);
+    text[5] = BASE64[last & 0b11_0000];
+    text
+}
+
+/// Marvin32, the checksum Microsoft's identifiable key formats carry.
+///
+/// Verified against Microsoft's own known-answer test in `MarvinTests.cs`, which
+/// is itself taken from SymCrypt: see the unit test below.
+fn marvin32(data: &[u8], seed: u64) -> u32 {
+    let hash = marvin_hash64(data, seed);
+    ((hash >> 32) as u32) ^ (hash as u32)
+}
+
+/// The 64-bit Marvin hash. Kept separate from [`marvin32`] because Microsoft's
+/// published test vectors are for this value.
+fn marvin_hash64(data: &[u8], seed: u64) -> u64 {
+    let mut p0 = seed as u32;
+    let mut p1 = (seed >> 32) as u32;
+    let (words, tail) = data.as_chunks::<4>();
+    for word in words {
+        p0 = p0.wrapping_add(u32::from_le_bytes(*word));
+        (p0, p1) = marvin_block(p0, p1);
+    }
+    // The tail is padded with a high bit whose position states how many bytes
+    // were left, so a trailing zero byte cannot be confused with no byte.
+    let tail = match tail {
+        [] => 0x80,
+        [a] => 0x8000 | u32::from(*a),
+        [a, b] => 0x0080_0000 | u32::from(*a) | u32::from(*b) << 8,
+        [a, b, c] => 0x8000_0000 | u32::from(*a) | u32::from(*b) << 8 | u32::from(*c) << 16,
+        _ => unreachable!("`as_chunks::<4>` leaves fewer than four bytes"),
+    };
+    p0 = p0.wrapping_add(tail);
+    (p0, p1) = marvin_block(p0, p1);
+    (p0, p1) = marvin_block(p0, p1);
+    (u64::from(p1) << 32) | u64::from(p0)
+}
+
+/// One Marvin mixing round.
+fn marvin_block(mut p0: u32, mut p1: u32) -> (u32, u32) {
+    p1 ^= p0;
+    p0 = p0.rotate_left(20);
+    p0 = p0.wrapping_add(p1);
+    p1 = p1.rotate_left(9);
+    p1 ^= p0;
+    p0 = p0.rotate_left(27);
+    p0 = p0.wrapping_add(p1);
+    p1 = p1.rotate_left(19);
+    (p0, p1)
 }
 
 /// A JWT is only a JWT when its header segment base64url-decodes to a JSON
@@ -2329,4 +2459,21 @@ pub fn mask(value: &str) -> String {
     out.push('\u{2026}');
     out.extend(&chars[chars.len() - keep..]);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::marvin_hash64;
+
+    /// Microsoft's own known-answer test for Marvin, from `MarvinTests.cs`,
+    /// which takes it from SymCrypt. The CASK checksum is worth nothing if this
+    /// primitive is subtly wrong, and a wrong one would fail silently: keys
+    /// would simply stop being reported.
+    #[test]
+    fn marvin_matches_microsofts_known_answer() {
+        assert_eq!(
+            marvin_hash64(b"abc", 0xd53c_d9ce_cd08_93b7),
+            0x22c7_4339_4927_69bf
+        );
+    }
 }

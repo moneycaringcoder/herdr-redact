@@ -30,7 +30,7 @@ fn every_builtin_rule_has_an_explanation() {
 
 #[test]
 fn every_builtin_rule_has_a_url_or_an_audited_exemption() {
-    const EXEMPT_RULES: [&str; 10] = [
+    const EXEMPT_RULES: [&str; 11] = [
         "age_secret_key",
         "aws_principal_id",
         "docker_registry_auth",
@@ -38,6 +38,7 @@ fn every_builtin_rule_has_a_url_or_an_audited_exemption() {
         "http_bearer_token",
         "jdbc_url_password",
         "jwt",
+        "microsoft_cask_key",
         "multiline_credential",
         "private_key_block",
         "url_credentials",
