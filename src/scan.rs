@@ -1523,20 +1523,19 @@ fn marvin32(data: &[u8], seed: u64) -> u32 {
 fn marvin_hash64(data: &[u8], seed: u64) -> u64 {
     let mut p0 = seed as u32;
     let mut p1 = (seed >> 32) as u32;
-    let mut words = data.chunks_exact(4);
-    for word in &mut words {
-        let word: [u8; 4] = word.try_into().expect("chunks_exact(4) yields four bytes");
-        p0 = p0.wrapping_add(u32::from_le_bytes(word));
+    let (words, tail) = data.as_chunks::<4>();
+    for word in words {
+        p0 = p0.wrapping_add(u32::from_le_bytes(*word));
         (p0, p1) = marvin_block(p0, p1);
     }
     // The tail is padded with a high bit whose position states how many bytes
     // were left, so a trailing zero byte cannot be confused with no byte.
-    let tail = match words.remainder() {
+    let tail = match tail {
         [] => 0x80,
         [a] => 0x8000 | u32::from(*a),
         [a, b] => 0x0080_0000 | u32::from(*a) | u32::from(*b) << 8,
         [a, b, c] => 0x8000_0000 | u32::from(*a) | u32::from(*b) << 8 | u32::from(*c) << 16,
-        _ => unreachable!("chunks_exact(4) leaves fewer than four bytes"),
+        _ => unreachable!("`as_chunks::<4>` leaves fewer than four bytes"),
     };
     p0 = p0.wrapping_add(tail);
     (p0, p1) = marvin_block(p0, p1);
