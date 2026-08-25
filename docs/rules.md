@@ -348,14 +348,14 @@ These credential formats were considered and deliberately not shipped because pr
 
 | Format | Marker | Reason |
 | --- | --- | --- |
-| GitLab pipeline trigger token | `glptt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| GitLab deploy token | `gldt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| GitLab SCIM token | `glsoat-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| GitLab incoming mail token | `glimt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| GitLab OAuth application secret | `gloas-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| DigitalOcean personal access token | `dop_v1_` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| DigitalOcean OAuth access token | `doo_v1_` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| DigitalOcean OAuth refresh token | `dor_v1_` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
+| GitLab pipeline trigger token | `glptt-` | GitLab's own source does establish the body: `Devise.friendly_token` is 20 characters excluding `l`, `I`, `O`, and `0`, and GitLab ships an in-product detection table with exact lengths, so the reason recorded here before — that no provider-controlled source existed — was wrong. It stays declined because this is the legacy shape: `rubocop/cop/gitlab/token_without_routable.rb` forces new token types to be routable, and a routable token is verified by its checksum in the `gitlab_routable_token` rule. A prefix-and-length rule for a shape GitLab is retiring buys precision that expires. |
+| GitLab deploy token | `gldt-` | As for the pipeline trigger token: `Devise.friendly_token` establishes 20 characters excluding `l`, `I`, `O`, and `0`, so the earlier reason was wrong. Declined because it is the legacy, checksumless shape that GitLab is replacing with routable tokens. |
+| GitLab SCIM token | `glsoat-` | As for the pipeline trigger token: `Devise.friendly_token` establishes 20 characters excluding `l`, `I`, `O`, and `0`, so the earlier reason was wrong. Declined because it is the legacy, checksumless shape that GitLab is replacing with routable tokens. |
+| GitLab incoming mail token | `glimt-` | As for the pipeline trigger token: `Devise.friendly_token` establishes 20 characters excluding `l`, `I`, `O`, and `0`, so the earlier reason was wrong. Declined because it is the legacy, checksumless shape that GitLab is replacing with routable tokens. |
+| GitLab OAuth application secret | `gloas-` | GitLab generates this one with `SecureRandom.hex(32)`, which is 64 lowercase hexadecimal characters — so the earlier reason, that no provider-controlled source established the body, was wrong. Declined because it is the legacy, checksumless shape that GitLab is replacing with routable tokens. |
+| DigitalOcean personal access token | `dop_v1_` | Partly overturned: `doctl`'s `commands/auth.go` sets `v1TokenLength = 71` and validates it, with tests rejecting 63 and 66 characters, which fixes the body at exactly 64. The charset is still unstated by DigitalOcean, so the safe form would be `[A-Za-z0-9]{64}`, and that gap — a charset this project would be guessing at rather than quoting — is the only reason left. |
+| DigitalOcean OAuth access token | `doo_v1_` | Partly overturned, as for `dop_v1_`: `doctl` validates a total length of 71, fixing the body at exactly 64 characters. Only the charset remains unstated by the provider. |
+| DigitalOcean OAuth refresh token | `dor_v1_` | No `doctl` validation covers this prefix, so unlike `dop_v1_` and `doo_v1_` neither its length nor its charset is established by a provider-controlled source. |
 | Slack app-level token | `xapp-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
 | Shopify Admin API access token | `shpat_` | The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset. |
 | Shopify delegate access token | `shppa_` | The provider documents the value as opaque, and no provider-controlled source establishes the body's length or charset. |
@@ -382,7 +382,7 @@ These credential formats were considered and deliberately not shipped because pr
 | Doppler service account token | `dp.sa.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
 | Doppler CLI token | `dp.ct.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
 | Doppler SCIM token | `dp.scim.` | The provider documents the prefix and scope segment, but the body length appears only in third-party scanner rules. |
-| Terraform Cloud API token | `.atlasv1.` | The fixed marker is an infix, not a prefix. |
+| Terraform Cloud API token | `.atlasv1.` | The recorded reason — that the fixed marker is an infix rather than a prefix — is not a reason: an infix costs nothing in a regex, and `.atlasv1.` is a distinctive nine-character literal. The honest verdict is revisit rather than decline, held back only because HashiCorp publishes three sample tokens rather than a specification: a 14-character first component in all three and a 67-character tail in two is documentation, not an invariant. |
 | Fly.io authorization token | `FlyV1` | The marker is ordinary text and the body has no invariant length. |
 | Fly.io deploy token with fm1r marker | `fm1r_` | The marker is ordinary text and the body has no invariant length. |
 | Fly.io deploy token with fm2 marker | `fm2_` | The marker is ordinary text and the body has no invariant length. |
@@ -394,12 +394,12 @@ These credential formats were considered and deliberately not shipped because pr
 | Mailgun API key | `key-` | The marker is a short English word and no provider-controlled source establishes the body grammar. |
 | Airtable personal access token | — | The provider documents the value as opaque and advises against pattern matching. |
 | Notion integration token | `ntn_` | The provider documents the value as opaque and advises against pattern matching. |
-| Grafana Cloud access policy token | `glc_` | The marker names a token and is not part of the secret value. |
+| Grafana Cloud access policy token | `glc_` | The recorded reason — that the marker names a token rather than being part of the secret — is factually wrong: `glc_` is the literal opening of the value. Grafana's own Cloud API documentation shows `"token": "glc_eyJrIjoi…"`, and the body base64-decodes to a JSON object carrying a 40-character hexadecimal key, a name, and an id. A decode-and-validate rule in the style of the JWT rule is therefore available; this entry records the corrected fact rather than the old excuse. |
 | OpenAI organization identifier | `org-` | This value is an identifier rather than a credential. |
 | Datadog API key | — | There is no provider-assigned prefix at all. |
 | Segment write key | — | There is no provider-assigned prefix at all. |
 | Vercel access token | — | There is no provider-assigned prefix at all. |
-| Netlify personal access token | — | There is no provider-assigned prefix at all. |
+| Netlify personal access token | `nfp_` | The recorded reason — no provider-assigned prefix at all — is outdated: the `nfp_` prefix exists in Netlify's own repository. The verdict stands anyway, because a prefix on its own is not a structure: no provider-controlled source establishes the body's length or charset, and this project does not ship prefix-only rules. |
 | Render API key | — | There is no provider-assigned prefix at all. |
 | Railway API token | — | There is no provider-assigned prefix at all. |
 | Heroku API key | — | There is no provider-assigned prefix at all. |
