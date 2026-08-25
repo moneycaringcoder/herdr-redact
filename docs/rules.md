@@ -83,7 +83,7 @@ Matches a `ghp_`, `gho_`, `ghu_`, `ghs_`, or `ghr_` prefix followed by at least 
 - **Pack:** `default` version 1
 - **Rotation guidance:** https://docs.github.com/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
 
-Matches `github_pat_`, a 22-character alphanumeric component, an underscore, and a 59-character alphanumeric component.
+Matches `github_pat_`, an alphanumeric component of at least 22 characters, an underscore, and an alphanumeric component of at least 59 characters. GitHub states that its tokens will grow in length, so both components are minimums and a longer token is reported whole rather than truncated and discarded.
 
 ## `anthropic_api_key`
 
@@ -173,7 +173,7 @@ Matches the Slack webhook host and services path followed by three alphanumeric 
 - **Pack:** `default` version 1
 - **Rotation guidance:** https://www.npmjs.com/settings/~/tokens
 
-Matches `npm_` followed by exactly 36 alphanumeric characters.
+Matches `npm_` or `npms_` followed by at least 36 alphanumeric characters. npm's own redactor covers both prefixes and a body of 36 to 48 characters, so the rule treats the length as a minimum and reports a longer body whole rather than matching its first 36 characters and then discarding the finding as part of a longer token.
 
 ## `pypi_token`
 

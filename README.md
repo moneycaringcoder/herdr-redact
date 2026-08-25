@@ -613,7 +613,7 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `google_oauth_client_secret` | `GOCSPX-…` | strong |
 | `gitlab_pat` | `glpat-…` | strong |
 | `grafana_service_account_token` | `glsa_…` service-account tokens whose checksum matches | strong |
-| `npm_token` | `npm_…` | strong |
+| `npm_token` | `npm_…` and `npms_…` | strong |
 | `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
 | `sendgrid_api_key` | `SG.…` | strong |
 | `huggingface_token` | `hf_…` | strong |

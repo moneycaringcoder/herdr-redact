@@ -11,6 +11,48 @@ one, and they are the `pattern` and `ruleId` fields of the JSON and SARIF
 output, so renaming one is a breaking change and will only happen in a major
 release, with the old name accepted as an alias for at least one minor cycle.
 
+## [Unreleased]
+
+### Fixed
+
+- The npm rule no longer finds a token and then throws it away. It matched
+  `npm_` followed by exactly 36 alphanumeric characters, so a longer body
+  matched its first 36 characters, the standalone check saw an alphanumeric
+  character immediately after the match, and the finding was discarded as a
+  fragment of a longer token — the scanner stayed silent on a credential it had
+  already found, which is the worst output it can produce. npm ships its own
+  redactor, and `lib/matchers.js` matches `/\b(npms?_)[a-zA-Z0-9]{36,48}\b/gi`,
+  which establishes two things the shipped rule contradicted: `npms_` is a real
+  prefix, and bodies longer than 36 characters exist. The rule now covers both
+  prefixes and treats 36 as a minimum, so a longer body is reported whole. The
+  base64-blob defence is unchanged: a token character after the run still means
+  the run is a slice of something longer.
+- The GitHub fine-grained token rule carries minimums rather than the exact 22
+  and 59 character components it pinned. GitHub's own token-format changelog
+  says tokens "will likely increase in length in future updates, so integrators
+  should plan to support tokens up to 255 characters", so the pinned widths were
+  a future silent discard of exactly the npm shape.
+
+### Changed
+
+- The remaining exact-length rules were audited for the same discard shape, and
+  the finding is recorded here rather than left implicit. Every one of them is
+  silent on an over-long body, so the question is only whether the provider
+  fixes the length. Two do: the age secret key is 58 Bech32 characters by
+  arithmetic from a 32-byte X25519 scalar plus a six-character checksum, and the
+  Grafana service-account token's 32-character body and eight hex checksum come
+  from Grafana's own generator. The AWS access key ID keeps its pinned 16
+  characters: IAM's published constraint is a 16-to-128 range on the whole
+  `AccessKeyId` field rather than on the body behind `AKIA`, and widening the
+  rule on that basis would report far more than access keys. The AWS secret,
+  OpenAI legacy, Google API key, Google OAuth client secret, and SendGrid
+  lengths have no provider-controlled source at all — the exact widths they
+  carry are not provider-stated, which is worth knowing but is not a reason to
+  widen them, because a wider rule with no provider evidence is a worse rule.
+  One nuance found on the way: `aws_secret_access_key` is anchored on the key
+  name and is not a standalone rule, so a longer run next to that key name is
+  reported truncated to 40 characters rather than discarded.
+
 ## [0.1.2] - 2026-08-22
 
 ### Added
