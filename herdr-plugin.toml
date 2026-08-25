@@ -11,7 +11,7 @@
 
 id = "moneycaringcoder.redact"
 name = "Redact"
-version = "0.1.2"
+version = "0.1.3"
 # The floor is the latest stable herdr, which is also the only version this
 # plugin has ever been run against: 0.8.0 / protocol 19. Earlier servers carry
 # the APIs used here — the `tokens` metadata API on workspace.report_metadata

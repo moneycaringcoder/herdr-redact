@@ -11,7 +11,7 @@ one, and they are the `pattern` and `ruleId` fields of the JSON and SARIF
 output, so renaming one is a breaking change and will only happen in a major
 release, with the old name accepted as an alias for at least one minor cycle.
 
-## [Unreleased]
+## [0.1.3] - 2026-08-25
 
 ### Added
 
