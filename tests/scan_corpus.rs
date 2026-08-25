@@ -197,6 +197,22 @@ const POSITIVE: &[Vector] = &[
         value: "hf_0123456789abcdefghijklmnopqrstuvwx",
         preview: "hf_0\u{2026}uvwx",
     },
+    // Supabase's own CLI refuses any token outside `^sbp_(oauth_)?[a-f0-9]{40}$`,
+    // so this is the exact shape with an obviously fake body.
+    Vector {
+        rule: "supabase_access_token",
+        confidence: Confidence::Strong,
+        text: "sbp_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11",
+        value: "sbp_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11",
+        preview: "sbp_\u{2026}fa11",
+    },
+    Vector {
+        rule: "sentry_auth_token",
+        confidence: Confidence::Strong,
+        text: "sntryu_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11",
+        value: "sntryu_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11",
+        preview: "sntr\u{2026}fa11",
+    },
     // The private half of an age keypair. Fake: the body is the bech32 charset
     // written out twice, which no `age-keygen` ever produced.
     Vector {
@@ -405,6 +421,9 @@ See the sk-learn docs, and the sk-ms-version header, for the migration notes.
 Grafana-shaped token with the wrong checksum: glsa_0123456789abcdefghijklmnopqrstuv_950d9027
 Grafana-shaped token with a 31-character body: glsa_0123456789abcdefghijklmnopqrstu_950d9026
 npm-shaped token with a 35-character body: npm_0123456789abcdefghijklmnopqrstuvwxy
+Supabase-shaped token with a 39-character body: sbp_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1
+Supabase-shaped token with an uppercase body: sbp_FA11FA11FA11FA11FA11FA11FA11FA11FA11FA11
+Sentry-shaped token with a 63-character body: sntryu_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1
 
 Not a token: eyJZZZZZZZZZZZZ.aaaaaaaaaaaaaa.bbbbbbbbbbbbbb
 Also not a token: eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.ZmFrZXNpZ25hdHVyZQ
@@ -792,6 +811,49 @@ fn github_fine_grained_token_survives_a_longer_component() {
 
     // A component shorter than today's layout is still not a token.
     assert!(scan(&vector.text[..vector.text.len() - 1], &rules, &KEY).is_empty());
+}
+
+#[test]
+fn supabase_access_token_covers_the_oauth_marker_only_in_lowercase_hex() {
+    let rules = builtin();
+    // `sbp_oauth_` is the second marker Supabase's own validator accepts.
+    let matches = scan(
+        "sbp_oauth_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11",
+        &rules,
+        &KEY,
+    );
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "supabase_access_token");
+    assert_eq!(matches[0].value_len, 50);
+
+    // The validator pins 40 lowercase hexadecimal characters, so neither a
+    // shorter body nor an uppercase one is a Supabase token.
+    for text in [
+        "sbp_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1",
+        "sbp_FA11FA11FA11FA11FA11FA11FA11FA11FA11FA11",
+    ] {
+        assert!(scan(text, &rules, &KEY).is_empty(), "matched {text}");
+    }
+}
+
+#[test]
+fn sentry_auth_token_covers_all_three_generated_markers() {
+    let rules = builtin();
+    for marker in ["sntryu_", "sntrya_", "sntryi_"] {
+        let text = format!("{marker}{}", "fa11".repeat(16));
+        let matches = scan(&text, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{marker}: {matches:?}");
+        assert_eq!(matches[0].pattern, "sentry_auth_token");
+        assert_eq!(matches[0].value_len, 71);
+    }
+
+    // `sntrys_` organisation tokens are base64 of a JSON document rather than
+    // 64 hexadecimal characters, so this rule deliberately leaves them alone.
+    let organisation = format!("sntrys_{}", "fa11".repeat(16));
+    assert!(scan(&organisation, &rules, &KEY).is_empty());
+    // One character short of the generated width is not a token either.
+    let short = format!("sntryu_{}fa1", "fa11".repeat(15));
+    assert!(scan(&short, &rules, &KEY).is_empty());
 }
 
 #[test]

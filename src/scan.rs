@@ -126,7 +126,7 @@ pub struct RejectedFormat {
     pub reason: &'static str,
 }
 
-const REJECTED_FORMATS: [RejectedFormat; 70] = [
+const REJECTED_FORMATS: [RejectedFormat; 69] = [
     RejectedFormat {
         format: "GitLab pipeline trigger token",
         marker: "glptt-",
@@ -225,11 +225,6 @@ const REJECTED_FORMATS: [RejectedFormat; 70] = [
     RejectedFormat {
         format: "SonarQube global analysis token",
         marker: "sqa_",
-        reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
-    },
-    RejectedFormat {
-        format: "Supabase personal access token",
-        marker: "sbp_",
         reason: "The body length and charset appear only in third-party scanner rules, not a provider-controlled source.",
     },
     RejectedFormat {
@@ -1104,6 +1099,35 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             "Matches `hf_` followed by at least 34 alphanumeric characters.",
             RotationGuidance::Url("https://huggingface.co/settings/tokens"),
             r"\bhf_[A-Za-z0-9]{34,}",
+        )
+        .standalone(),
+        // Supabase's CLI validates every token it loads — `access_token.go`
+        // holds `AccessTokenPattern = regexp.MustCompile("^sbp_(oauth_)?[a-f0-9]{40}$")`
+        // — so this is a provider-enforced grammar rather than a description of
+        // one, and the length and charset are exact rather than a floor.
+        Rule::new(
+            "supabase_access_token",
+            "Supabase personal access token",
+            Confidence::Strong,
+            "Matches `sbp_` or `sbp_oauth_` followed by exactly 40 lowercase hexadecimal characters. Supabase's own CLI refuses to load a token outside that shape, so the length and charset are enforced by the provider rather than inferred, and an uppercase or shorter body does not fire.",
+            RotationGuidance::Url("https://supabase.com/dashboard/account/tokens"),
+            r"\bsbp_(?:oauth_)?[0-9a-f]{40}",
+        )
+        .standalone(),
+        // Sentry generates auth tokens as a type marker plus
+        // `secrets.token_hex(nbytes=32)` in `models/apitoken.py`, and the column
+        // is `max_length=71`, which is 7 + 64. The markers come from
+        // `types/token.py`: `sntryu_` for a user token, `sntrya_` for a user
+        // application token, and `sntryi_` for an integration token. The fourth,
+        // `sntrys_`, is base64 of a JSON document and is a different rule's
+        // problem, so it is left alone rather than half-matched.
+        Rule::new(
+            "sentry_auth_token",
+            "Sentry auth token",
+            Confidence::Strong,
+            "Matches the `sntryu_`, `sntrya_`, and `sntryi_` markers followed by exactly 64 lowercase hexadecimal characters. Sentry's own generator produces the body from a 32-byte hexadecimal token, and its column width of 71 characters corroborates the seven-character marker plus that body. The organisation-token marker `sntrys_` carries a base64 JSON document instead and is deliberately not matched.",
+            RotationGuidance::Url("https://docs.sentry.io/api/auth/"),
+            r"\bsntry[aiu]_[0-9a-f]{64}",
         )
         .standalone(),
         // The private half of an age keypair. The public half — `age1…`, the

@@ -617,6 +617,8 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
 | `sendgrid_api_key` | `SG.…` | strong |
 | `huggingface_token` | `hf_…` | strong |
+| `supabase_access_token` | `sbp_…` and `sbp_oauth_…`, exactly as Supabase's own CLI validates them | strong |
+| `sentry_auth_token` | `sntryu_…`, `sntrya_…`, `sntryi_…` | strong |
 | `age_secret_key` | `AGE-SECRET-KEY-1…`, the private half only — `age1…` is a public key and is ignored | strong |
 | `jdbc_url_password` | `password` query parameters or properties in a `jdbc:` connection string, after placeholder filtering | strong |
 | `docker_registry_auth` | Docker registry `"auth"` values that decode to exactly `username:password` | strong |

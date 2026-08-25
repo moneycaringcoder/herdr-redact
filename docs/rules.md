@@ -29,6 +29,8 @@ Strong confidence means the format is structurally identifiable; weak confidence
 | `gitlab_pat` | GitLab personal access token | strong | `default` | 1 |
 | `grafana_service_account_token` | Grafana service account token | strong | `default` | 1 |
 | `huggingface_token` | Hugging Face token | strong | `default` | 1 |
+| `supabase_access_token` | Supabase personal access token | strong | `default` | 1 |
+| `sentry_auth_token` | Sentry auth token | strong | `default` | 1 |
 | `age_secret_key` | age secret key | strong | `default` | 1 |
 | `jdbc_url_password` | JDBC URL password | strong | `default` | 1 |
 | `docker_registry_auth` | Docker registry auth | strong | `default` | 1 |
@@ -220,6 +222,24 @@ Matches the `glsa_` prefix, a 32-character alphanumeric body, and an eight-chara
 
 Matches `hf_` followed by at least 34 alphanumeric characters.
 
+## `supabase_access_token`
+
+- **Label:** Supabase personal access token
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** https://supabase.com/dashboard/account/tokens
+
+Matches `sbp_` or `sbp_oauth_` followed by exactly 40 lowercase hexadecimal characters. Supabase's own CLI refuses to load a token outside that shape, so the length and charset are enforced by the provider rather than inferred, and an uppercase or shorter body does not fire.
+
+## `sentry_auth_token`
+
+- **Label:** Sentry auth token
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** https://docs.sentry.io/api/auth/
+
+Matches the `sntryu_`, `sntrya_`, and `sntryi_` markers followed by exactly 64 lowercase hexadecimal characters. Sentry's own generator produces the body from a 32-byte hexadecimal token, and its column width of 71 characters corroborates the seven-character marker plus that body. The organisation-token marker `sntrys_` carries a base64 JSON document instead and is deliberately not matched.
+
 ## `age_secret_key`
 
 - **Label:** age secret key
@@ -318,7 +338,6 @@ These credential formats were considered and deliberately not shipped because pr
 | SonarQube project analysis token | `sqp_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
 | SonarQube user token | `squ_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
 | SonarQube global analysis token | `sqa_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
-| Supabase personal access token | `sbp_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
 | Databricks personal access token | `dapi` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
 | Docker Hub personal access token | `dckr_pat_` | The body length and charset appear only in third-party scanner rules, not a provider-controlled source. |
 | New Relic user API key | `NRAK-` | The prefix mapping, body length, and charset appear only in third-party scanner rules, not a provider-controlled source. |

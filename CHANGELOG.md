@@ -13,6 +13,24 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ## [Unreleased]
 
+### Added
+
+- A rule for Supabase personal access tokens, `supabase_access_token`. Supabase
+  does not merely document the shape, it enforces it: its CLI holds
+  `AccessTokenPattern = regexp.MustCompile("^sbp_(oauth_)?[a-f0-9]{40}$")` and
+  refuses to load anything else, which makes the 40 lowercase hexadecimal
+  characters a provider-enforced grammar rather than a third-party scanner's
+  guess. Both markers are covered, and an uppercase or short body does not fire.
+  The ledger entry that recorded this format as third-party evidence only has
+  been removed rather than left contradicting the shipped rule.
+- A rule for Sentry auth tokens, `sentry_auth_token`, covering the `sntryu_`,
+  `sntrya_`, and `sntryi_` markers followed by exactly 64 lowercase hexadecimal
+  characters. Sentry generates the body with `secrets.token_hex(nbytes=32)`, and
+  its own column width of 71 characters corroborates a seven-character marker
+  plus a 64-character body. The fourth marker, `sntrys_`, holds a base64 JSON
+  document instead and is deliberately not matched: half-matching a different
+  structure would report a value the rule cannot claim to understand.
+
 ### Fixed
 
 - The npm rule no longer finds a token and then throws it away. It matched
