@@ -98,6 +98,48 @@ not build change detection on it. This plugin hashes the text it read and
 compares the hash, which costs a round trip per pane per cycle and is the
 reason the cycle needs a time budget at all.
 
+### Trap 5 — the event machinery cannot watch a session for output
+
+Traps 3 and 4 rule out both revision counters, which leaves the question of why
+this plugin polls at all when the schema carries events. Checked against the
+bundled schema (`herdr api schema --json`, protocol 19) and a live 0.8.0 server.
+The capability needed is "tell me, on one connection, when any pane printed
+something", and it does not exist.
+
+`pane_output_changed` **is** an event kind and `events.wait` will match it — but
+its `EventMatch` variant **requires a `pane_id`**. You can wait for output on one
+named pane, never on the session. Since the server answers one request per
+connection, covering a 37-pane session means 37 simultaneously blocked
+connections and 37 threads, each re-armed individually after every event. That is
+not a scanner; it is a workaround standing in for the subscription that is
+missing.
+
+`events.subscribe` **does** stream many events down one connection — verified
+live: `subscription_started` followed by 51 further frames in five seconds. But
+its subscription enum has no `pane.output_changed` member. The pane-related
+members are `pane.created`, `pane.closed`, `pane.updated`, `pane.focused`,
+`pane.moved`, `pane.exited`, `pane.agent_detected`, `pane.output_matched`,
+`pane.agent_status_changed` and `pane.scroll_changed`.
+
+Two of those look like a way in and are not:
+
+- `pane.output_matched` takes a substring or regex and returns `matched_line`.
+  Building on it hands detection to herdr's regex engine, which throws away every
+  structural check that buys this plugin its precision — the JWT header that must
+  really decode to JSON carrying `alg`, the checksums the provider rules
+  recompute, `has_varied_body`, `plausible_secret_value` — and it asks the server
+  to send the raw line containing the credential back over the socket into a code
+  path that is not `scan.rs`. That breaks both of the rules in CONTRIBUTING.md.
+- `pane.updated` is subscribable session-wide but is not an output signal. Traps
+  3 and 4 above are the same finding from the other end: neither revision counter
+  moves when a pane produces output. A scanner built on `pane.updated` would miss
+  output while appearing to watch, which is the worst failure shape available.
+
+So the poll stays, and the cycle keeps its deadline and its rotation. Revisit if
+herdr adds a session-wide output-changed subscription; shortening the poll
+interval is not the substitute, because it spends more read budget to shrink the
+window and makes the truncation notes worse.
+
 ### Read latency is per-pane and can be seconds
 
 Measured on a live session of 37 panes with about twenty agents running:
