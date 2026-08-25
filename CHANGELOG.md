@@ -30,6 +30,22 @@ release, with the old name accepted as an alias for at least one minor cycle.
   plus a 64-character body. The fourth marker, `sntrys_`, holds a base64 JSON
   document instead and is deliberately not matched: half-matching a different
   structure would report a value the rule cannot claim to understand.
+- A rule for GitLab routable tokens, `gitlab_routable_token`, covering `glpat-`,
+  `glrt-`, `glrtr-`, and `glagent-`. GitLab is open source, and
+  `lib/authn/token_field/generator/routable_token.rb` states the grammar the
+  ledger recorded as missing: the checksum is
+  `Zlib.crc32(encoded).to_s(36).rjust(7, "0")` over
+  `"#{prefix}#{base64_payload}.#{version}.#{length}"`. Because the prefix is
+  inside the checksum input, one rule accepts the whole family and a token
+  wearing the wrong prefix fails the checksum instead of needing a pattern of
+  its own — asserted by swapping `glpat-` for `glrt-` and watching the finding
+  disappear. Routable generation is not behind a feature flag and
+  `rubocop/cop/gitlab/token_without_routable.rb` requires new token types to use
+  it, so this is the shape GitLab is moving to. An administrator can configure
+  an instance prefix that precedes the marker; since the prefix is part of the
+  checksum input, such a token is not matched, and the rule says so rather than
+  pretending otherwise. The two ledger entries this supersedes, `glrt-` and
+  `glrtr-`, are removed.
 
 ### Fixed
 
@@ -53,6 +69,12 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Changed
 
+- The legacy GitLab personal access token rule no longer claims a routable
+  token. `glpat-` opens both shapes, so without an explicit disclaimer the
+  legacy rule reported a checksummed token under a rule that cannot check the
+  checksum — and reported a *tampered* routable token as a credential. It now
+  matches the routable tail as an optional group and refuses when that group
+  participated, leaving those values to `gitlab_routable_token`.
 - The GitHub token rule verifies GitHub's checksum instead of trusting the
   prefix. It matched a prefix and a length, so anything of the right shape
   starting `ghp_` fired. GitHub describes the design in "Behind GitHub's new

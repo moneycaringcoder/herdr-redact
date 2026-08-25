@@ -126,20 +126,10 @@ pub struct RejectedFormat {
     pub reason: &'static str,
 }
 
-const REJECTED_FORMATS: [RejectedFormat; 69] = [
+const REJECTED_FORMATS: [RejectedFormat; 67] = [
     RejectedFormat {
         format: "GitLab pipeline trigger token",
         marker: "glptt-",
-        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
-    },
-    RejectedFormat {
-        format: "GitLab runner authentication token",
-        marker: "glrt-",
-        reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
-    },
-    RejectedFormat {
-        format: "GitLab runner authentication token created via registration token",
-        marker: "glrtr-",
         reason: "The prefix is documented but no provider-controlled source establishes the body's length or charset.",
     },
     RejectedFormat {
@@ -1075,17 +1065,47 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
             r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
         )
         .standalone(),
+        // The legacy shape, with no checksum to verify. It has to disclaim the
+        // routable shape below explicitly: a routable token opens with the same
+        // prefix and a longer payload, and without the optional tail group this
+        // rule would claim it — reporting a checksummed token under a rule that
+        // cannot check the checksum, and reporting a *tampered* one as a
+        // credential. The trailing group is matched only so the check can see it
+        // and refuse.
         Rule::new(
             "gitlab_pat",
             "GitLab personal access token",
             Confidence::Strong,
-            "Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet.",
+            "Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet. A routable token — the same prefix followed by a version, a length, and a checksum — is deliberately left to `gitlab_routable_token`, which verifies that checksum, so this rule reports only the legacy shape.",
             RotationGuidance::Url(
                 "https://docs.gitlab.com/user/profile/personal_access_tokens/",
             ),
-            r"\bglpat-[A-Za-z0-9_-]{20,}",
+            r"\bglpat-[A-Za-z0-9_-]{20,}(\.[0-9a-z]{2}\.[0-9a-z]{9})?",
         )
-        .standalone(),
+        .standalone()
+        .check(is_legacy_gitlab_pat),
+        // GitLab is open source, and
+        // `lib/authn/token_field/generator/routable_token.rb` states the grammar
+        // the ledger recorded as missing: the token is
+        // `PREFIX PAYLOAD "." VERSION "." LENGTH CRC`, where the CRC is
+        // `Zlib.crc32(everything before it).to_s(36).rjust(7, "0")`. The prefix
+        // is inside the CRC input, so one rule covers the whole family and a
+        // token wearing the wrong prefix fails the checksum instead of needing
+        // its own pattern. Routable generation is not behind a feature flag
+        // (`lib/authn/token_field/base.rb`), and
+        // `rubocop/cop/gitlab/token_without_routable.rb` forces new token types
+        // to be routable, so this is the shape GitLab is moving to, not a niche
+        // path.
+        Rule::new(
+            "gitlab_routable_token",
+            "GitLab routable token",
+            Confidence::Strong,
+            "Matches a `glpat-`, `glrt-`, `glrtr-`, or `glagent-` prefix, a base64url payload, a two-character version, a two-character payload length, and a seven-character checksum, then recomputes that checksum: GitLab's own generator takes the CRC-32 of the prefix, payload, version and length and renders it in base36, so a tampered token does not fire. An administrator can configure an instance prefix that precedes these markers, and because the prefix is part of the checksum input such a token is not matched — the checksum is the reliable half, the prefix is only the label.",
+            RotationGuidance::Url("https://docs.gitlab.com/user/profile/personal_access_tokens/"),
+            r"\b(?:glpat-|glrtr-|glrt-|glagent-)[A-Za-z0-9_-]{27,300}\.[0-9a-z]{2}\.[0-9a-z]{9}",
+        )
+        .standalone()
+        .check(is_gitlab_routable_token),
         Rule::new(
             "grafana_service_account_token",
             "Grafana service account token",
@@ -1366,6 +1386,44 @@ fn base62_crc32(bytes: &[u8]) -> [u8; 6] {
         remaining /= 62;
     }
     encoded
+}
+
+/// A GitLab routable token carries its own CRC-32 in its last seven characters.
+///
+/// `lib/authn/token_field/generator/routable_token.rb` computes
+/// `Zlib.crc32(encoded).to_s(36).rjust(7, "0")` over
+/// `"#{prefix}#{base64_payload}.#{version}.#{length}"`, so the checksum covers
+/// the prefix as well as the body. That is what lets one rule accept the whole
+/// family: a token whose prefix has been altered fails here rather than needing
+/// a pattern of its own.
+fn is_gitlab_routable_token(caps: &Captures<'_>) -> bool {
+    let value = &caps[0];
+    let Some(boundary) = value.len().checked_sub(7) else {
+        return false;
+    };
+    let (encoded, checksum) = value.split_at(boundary);
+    base36_crc32(encoded.as_bytes()).as_slice() == checksum.as_bytes()
+}
+
+/// CRC-32 of `bytes` in base36 with the `0-9a-z` alphabet, left-padded with `0`
+/// to seven digits — Ruby's `Integer#to_s(36)` plus `rjust(7, "0")`. Seven
+/// digits is always enough: 36⁷ exceeds `u32::MAX`.
+fn base36_crc32(bytes: &[u8]) -> [u8; 7] {
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut remaining = crc32_ieee(bytes);
+    let mut encoded = [b'0'; 7];
+    for slot in encoded.iter_mut().rev() {
+        *slot = ALPHABET[(remaining % 36) as usize];
+        remaining /= 36;
+    }
+    encoded
+}
+
+/// A legacy GitLab PAT is one with no routable tail. The tail group participates
+/// only when the value carries a version, a length and a checksum, and that
+/// value belongs to `gitlab_routable_token`, which can verify it.
+fn is_legacy_gitlab_pat(caps: &Captures<'_>) -> bool {
+    caps.get(1).is_none()
 }
 
 /// A JWT is only a JWT when its header segment base64url-decodes to a JSON
