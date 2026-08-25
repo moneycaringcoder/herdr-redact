@@ -27,6 +27,7 @@ Strong confidence means the format is structurally identifiable; weak confidence
 | `pypi_token` | PyPI API token | strong | `default` | 1 |
 | `sendgrid_api_key` | SendGrid API key | strong | `default` | 1 |
 | `gitlab_pat` | GitLab personal access token | strong | `default` | 1 |
+| `gitlab_routable_token` | GitLab routable token | strong | `default` | 1 |
 | `grafana_service_account_token` | Grafana service account token | strong | `default` | 1 |
 | `huggingface_token` | Hugging Face token | strong | `default` | 1 |
 | `supabase_access_token` | Supabase personal access token | strong | `default` | 1 |
@@ -202,7 +203,16 @@ Matches `SG.`, a 22-character component, a dot, and a 43-character component, wi
 - **Pack:** `default` version 1
 - **Rotation guidance:** https://docs.gitlab.com/user/profile/personal_access_tokens/
 
-Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet.
+Matches `glpat-` followed by at least 20 characters from the alphanumeric, underscore, and hyphen alphabet. A routable token — the same prefix followed by a version, a length, and a checksum — is deliberately left to `gitlab_routable_token`, which verifies that checksum, so this rule reports only the legacy shape.
+
+## `gitlab_routable_token`
+
+- **Label:** GitLab routable token
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** https://docs.gitlab.com/user/profile/personal_access_tokens/
+
+Matches a `glpat-`, `glrt-`, `glrtr-`, or `glagent-` prefix, a base64url payload, a two-character version, a two-character payload length, and a seven-character checksum, then recomputes that checksum: GitLab's own generator takes the CRC-32 of the prefix, payload, version and length and renders it in base36, so a tampered token does not fire. An administrator can configure an instance prefix that precedes these markers, and because the prefix is part of the checksum input such a token is not matched — the checksum is the reliable half, the prefix is only the label.
 
 ## `grafana_service_account_token`
 
@@ -319,8 +329,6 @@ These credential formats were considered and deliberately not shipped because pr
 | Format | Marker | Reason |
 | --- | --- | --- |
 | GitLab pipeline trigger token | `glptt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| GitLab runner authentication token | `glrt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
-| GitLab runner authentication token created via registration token | `glrtr-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
 | GitLab deploy token | `gldt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
 | GitLab SCIM token | `glsoat-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |
 | GitLab incoming mail token | `glimt-` | The prefix is documented but no provider-controlled source establishes the body's length or charset. |

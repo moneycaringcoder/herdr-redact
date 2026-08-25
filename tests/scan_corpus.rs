@@ -181,6 +181,15 @@ const POSITIVE: &[Vector] = &[
         value: "glpat-0123456789abcdefghij",
         preview: "glpa\u{2026}ghij",
     },
+    // GitLab's own generator produces this checksum for the payload, version and
+    // length in front of it, prefix included.
+    Vector {
+        rule: "gitlab_routable_token",
+        confidence: Confidence::Strong,
+        text: "glpat-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r01dmuob",
+        value: "glpat-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r01dmuob",
+        preview: "glpa\u{2026}muob",
+    },
     // Grafana's checksum algorithm produces this checksum for a synthetic run
     // of characters used as the 32-character body.
     Vector {
@@ -425,6 +434,7 @@ Supabase-shaped token with a 39-character body: sbp_fa11fa11fa11fa11fa11fa11fa11
 Supabase-shaped token with an uppercase body: sbp_FA11FA11FA11FA11FA11FA11FA11FA11FA11FA11
 Sentry-shaped token with a 63-character body: sntryu_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1
 GitHub-shaped token with the wrong checksum: ghp_0123456789abcdefghijklmnopqrst3j70pJ
+GitLab-shaped routable token with a tampered checksum: glpat-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r01dmuoa
 
 Not a token: eyJZZZZZZZZZZZZ.aaaaaaaaaaaaaa.bbbbbbbbbbbbbb
 Also not a token: eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.ZmFrZXNpZ25hdHVyZQ
@@ -782,6 +792,35 @@ fn github_token_requires_its_checksum_at_any_length() {
         let matches = scan(token, &rules, &KEY);
         assert_eq!(matches.len(), 1, "{token}: {matches:?}");
         assert_eq!(matches[0].pattern, "github_token");
+    }
+}
+
+#[test]
+fn gitlab_routable_token_recomputes_its_checksum_for_every_prefix() {
+    let rules = builtin();
+    // Each prefix with the checksum GitLab's generator produces for it. The
+    // prefix is inside the checksum input, so these differ by more than a label.
+    for token in [
+        "glpat-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r01dmuob",
+        "glrt-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r0b7rbx9",
+        "glrtr-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r0qbo049",
+        "glagent-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r1hn8kcv",
+    ] {
+        let matches = scan(token, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{token}: {matches:?}");
+        assert_eq!(matches[0].pattern, "gitlab_routable_token");
+        assert_eq!(matches[0].value_len, token.chars().count());
+    }
+
+    // One character of the checksum, and then one of the payload.
+    for token in [
+        "glpat-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r01dmuoa",
+        "glpat-EXAMPLEEXAMPLEEXAMPLEEXAMPX.01.0r01dmuob",
+        // A prefix swapped for another real one: the checksum covers the prefix,
+        // so this fails rather than reporting under the wrong label.
+        "glrt-EXAMPLEEXAMPLEEXAMPLEEXAMPL.01.0r01dmuob",
+    ] {
+        assert!(scan(token, &rules, &KEY).is_empty(), "matched {token}");
     }
 }
 

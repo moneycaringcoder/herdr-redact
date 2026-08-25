@@ -611,7 +611,8 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `slack_webhook_url` | `https://hooks.slack.com/services/…` | strong |
 | `google_api_key` | `AIza…` | strong |
 | `google_oauth_client_secret` | `GOCSPX-…` | strong |
-| `gitlab_pat` | `glpat-…` | strong |
+| `gitlab_pat` | `glpat-…` in its legacy shape, leaving routable tokens to the rule below | strong |
+| `gitlab_routable_token` | `glpat-`, `glrt-`, `glrtr-`, `glagent-` routable tokens whose checksum matches | strong |
 | `grafana_service_account_token` | `glsa_…` service-account tokens whose checksum matches | strong |
 | `npm_token` | `npm_…` and `npms_…` | strong |
 | `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
