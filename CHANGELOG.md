@@ -80,6 +80,18 @@ release, with the old name accepted as an alias for at least one minor cycle.
   with no marker, and matching them would mean reporting every 88-character
   base64 run. The `AccountKey=` ledger entry now says that, instead of recording
   the value as opaque.
+- `docs/herdr-protocol.md` gains trap 5: why the plugin polls rather than
+  subscribing. herdr 0.8.0 does carry event machinery, so the omission looked
+  like an oversight. It is not. `pane_output_changed` exists as an event kind but
+  its `events.wait` match requires a `pane_id`, and the server answers one
+  request per connection, so covering a 37-pane session would mean 37 blocked
+  connections. `events.subscribe` streams many events down one connection but
+  its enum has no `pane.output_changed` member. Of the members it does have,
+  `pane.output_matched` would hand detection to herdr's regex engine and send the
+  raw line containing the credential back into a code path that is not
+  `scan.rs`, breaking both of this project's rules, and `pane.updated` is not an
+  output signal — traps 3 and 4 are the same finding from the other end. The poll
+  stays until herdr adds a session-wide output-changed subscription.
 
 ### Fixed
 
