@@ -323,9 +323,9 @@ const REJECTED_FORMATS: [RejectedFormat; 67] = [
         reason: "The 64-character value has no provider-assigned prefix or provider-controlled charset.",
     },
     RejectedFormat {
-        format: "Azure Storage account key",
+        format: "Azure Storage account key issued before identifiable keys",
         marker: "AccountKey=",
-        reason: "The provider documents the key value as opaque.",
+        reason: "Modern storage keys are identifiable and are matched by the `azure_identifiable_key` rule, which recomputes their checksum. Only keys issued before that rollout remain undetectable: they are shapeless base64 with no marker and no checksum, so matching them would mean reporting every 88-character base64 run.",
     },
     RejectedFormat {
         format: "Telegram bot token",
@@ -1181,6 +1181,30 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
         )
         .standalone()
         .check(is_microsoft_cask_key),
+        // Modern Azure storage-family keys are identifiable, which overturns the
+        // ledger entry that recorded the value as opaque.
+        // `Azure64ByteIdentifiableKeys` states the shape and
+        // `IdentifiableSecrets.ValidateChecksum` the check: the key decodes to 64
+        // bytes whose last four are a little-endian Marvin32 over the preceding
+        // 60, with a seed that depends on which service issued it.
+        //
+        // There is no `\b` here on purpose. The 76 leading characters are base64,
+        // so a match can begin with `+` or `/`, where a word boundary does not
+        // exist; the standalone check is both stricter and the right tool, since
+        // it rejects a match whose neighbour is any base64 character. The
+        // trailing `==` is consumed for the same reason as the CASK rule.
+        Rule::new(
+            "azure_identifiable_key",
+            "Azure identifiable key",
+            Confidence::Strong,
+            "Matches Microsoft's 64-byte identifiable key layout — 76 base64 characters, a four-character service signature at offset 76, five more base64 characters, and a terminal character — then recomputes the checksum Azure's own generator writes: the key decodes to 64 bytes whose last four are a little-endian Marvin32 over the first 60, seeded per service. Storage accounts, Batch accounts, Cosmos DB master keys, Azure ML Classic web services, and API Management keys are covered, each with the seeds Microsoft's own validators try. A key of exactly the right shape with the wrong checksum does not fire. Keys issued before the identifiable-key rollout are shapeless base64 with no marker and are deliberately not matched: missing an old key is the right trade against reporting every 88-character base64 string.",
+            RotationGuidance::Exempt(
+                "The four-character signature says which service issued the key — storage, Batch, Cosmos DB, ML Classic, or API Management — and rotation happens in that resource's own portal blade.",
+            ),
+            r"[A-Za-z0-9+/]{76}(?:APIM|ACDb|\+(?:ABa|AMC|ASt))[A-Za-z0-9+/]{5}[AQgw]==",
+        )
+        .standalone()
+        .check(is_azure_identifiable_key),
         // The private half of an age keypair. The public half — `age1…`, the
         // recipient — is printed by `age-keygen` next to this one, appears in
         // every `.sops.yaml` and in every README that explains age, and is not
@@ -1476,6 +1500,44 @@ fn is_microsoft_cask_key(caps: &Captures<'_>) -> bool {
         return false;
     };
     cask_checksum_text(&bytes, SEED).starts_with(observed.as_bytes())
+}
+
+/// An Azure 64-byte identifiable key ends in a little-endian Marvin32 checksum
+/// over the 60 bytes before it, seeded per service.
+///
+/// The seeds are `IdentifiableMetadata`'s, and the candidate list per signature
+/// is the one Microsoft's own validators try: `IsAzureCosmosDBIdentifiableKey`
+/// tries the master read-write and read-only seeds, and API Management has four
+/// key kinds — subscription, direct management, gateway, and repository.
+fn is_azure_identifiable_key(caps: &Captures<'_>) -> bool {
+    let value = &caps[0];
+    let Some(signature) = value.get(76..80) else {
+        return false;
+    };
+    let seeds: &[u64] = match signature {
+        "+ASt" => &[0x4465_6661_756c_7430],
+        "+ABa" => &[0x4162_4163_6374_3030],
+        "ACDb" => &[0x4d61_7374_5257_3030, 0x4d61_7374_524f_3030],
+        "+AMC" => &[0x436c_6173_7369_6330],
+        "APIM" => &[
+            0x496f_5448_7562_3030,
+            0x5465_6e61_6e74_3030,
+            0x4761_7465_7779_3030,
+            0x4769_744b_6579_3030,
+        ],
+        _ => return false,
+    };
+    let Some(bytes) = base64_decode(value) else {
+        return false;
+    };
+    let Some((body, checksum)) = bytes.split_at_checked(60) else {
+        return false;
+    };
+    let Ok(checksum) = <[u8; 4]>::try_from(checksum) else {
+        return false;
+    };
+    let expected = u32::from_le_bytes(checksum);
+    seeds.iter().any(|&seed| marvin32(body, seed) == expected)
 }
 
 /// The checksum text Microsoft's generator writes into a common annotated key.

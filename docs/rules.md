@@ -33,6 +33,7 @@ Strong confidence means the format is structurally identifiable; weak confidence
 | `supabase_access_token` | Supabase personal access token | strong | `default` | 1 |
 | `sentry_auth_token` | Sentry auth token | strong | `default` | 1 |
 | `microsoft_cask_key` | Microsoft common annotated security key | strong | `default` | 1 |
+| `azure_identifiable_key` | Azure identifiable key | strong | `default` | 1 |
 | `age_secret_key` | age secret key | strong | `default` | 1 |
 | `jdbc_url_password` | JDBC URL password | strong | `default` | 1 |
 | `docker_registry_auth` | Docker registry auth | strong | `default` | 1 |
@@ -260,6 +261,15 @@ Matches the `sntryu_`, `sntrya_`, and `sntryi_` markers followed by exactly 64 l
 
 Matches Microsoft's common annotated security key layout — 52 base64 characters, the `JQQJ9` marker at offset 52, a key-kind character, an allocation date, reserved bytes, a four-character provider signature, and a checksum — then recomputes that checksum: Marvin32 over the first 60 decoded bytes, seeded from Microsoft's `Default0` literal, rendered in base62 and re-canonicalised as base64. A key of exactly the right shape with the wrong checksum does not fire. Both the 84-character and the 88-character forms are covered, and the trailing base64 padding of the longer form is consumed so the finding is not discarded as part of a longer token. The provider signature only selects which service the key belongs to.
 
+## `azure_identifiable_key`
+
+- **Label:** Azure identifiable key
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** no provider page — The four-character signature says which service issued the key — storage, Batch, Cosmos DB, ML Classic, or API Management — and rotation happens in that resource's own portal blade.
+
+Matches Microsoft's 64-byte identifiable key layout — 76 base64 characters, a four-character service signature at offset 76, five more base64 characters, and a terminal character — then recomputes the checksum Azure's own generator writes: the key decodes to 64 bytes whose last four are a little-endian Marvin32 over the first 60, seeded per service. Storage accounts, Batch accounts, Cosmos DB master keys, Azure ML Classic web services, and API Management keys are covered, each with the seeds Microsoft's own validators try. A key of exactly the right shape with the wrong checksum does not fire. Keys issued before the identifiable-key rollout are shapeless base64 with no marker and are deliberately not matched: missing an old key is the right trade against reporting every 88-character base64 string.
+
 ## `age_secret_key`
 
 - **Label:** age secret key
@@ -377,7 +387,7 @@ These credential formats were considered and deliberately not shipped because pr
 | Fly.io deploy token with fm1r marker | `fm1r_` | The marker is ordinary text and the body has no invariant length. |
 | Fly.io deploy token with fm2 marker | `fm2_` | The marker is ordinary text and the body has no invariant length. |
 | JFrog reference token | — | The 64-character value has no provider-assigned prefix or provider-controlled charset. |
-| Azure Storage account key | `AccountKey=` | The provider documents the key value as opaque. |
+| Azure Storage account key issued before identifiable keys | `AccountKey=` | Modern storage keys are identifiable and are matched by the `azure_identifiable_key` rule, which recomputes their checksum. Only keys issued before that rollout remain undetectable: they are shapeless base64 with no marker and no checksum, so matching them would mean reporting every 88-character base64 run. |
 | Telegram bot token | — | There is no invariant tail length because the bot identifier width changes. |
 | Discord bot token | — | The documented segment lengths are examples, not provider-guaranteed invariants. |
 | Square access token | `EAAA` | The body varies from 22 to 60 characters, so the prefix does not establish a precise shape. |

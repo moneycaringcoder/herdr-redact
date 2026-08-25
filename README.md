@@ -622,6 +622,7 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `sentry_auth_token` | `sntryu_…`, `sntrya_…`, `sntryi_…` | strong |
 | `age_secret_key` | `AGE-SECRET-KEY-1…`, the private half only — `age1…` is a public key and is ignored | strong |
 | `microsoft_cask_key` | Microsoft common annotated security keys — the `JQQJ9` marker at offset 52 — whose Marvin32 checksum matches | strong |
+| `azure_identifiable_key` | Azure storage, Batch, Cosmos DB, ML Classic and API Management keys whose Marvin32 checksum matches | strong |
 | `jdbc_url_password` | `password` query parameters or properties in a `jdbc:` connection string, after placeholder filtering | strong |
 | `docker_registry_auth` | Docker registry `"auth"` values that decode to exactly `username:password` | strong |
 | `vault_token` | modern Vault `hvs.`, `hvb.`, and `hvr.` tokens | strong |
