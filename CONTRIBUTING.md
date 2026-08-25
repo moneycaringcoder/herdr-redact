@@ -54,6 +54,15 @@ The most useful contribution this project can receive. To make one easy to merge
   documents this prefix here" is worth a line of comment.
 - Prefer a rule anchored on a distinctive prefix over one anchored on length and
   charset. `ghp_` plus 36 base62 is safe; 36 base62 on its own is not.
+- **Never pin a length the provider has not fixed.** An exact quantifier plus
+  the `standalone` boundary check is the one shape that loses a credential
+  outright: a body longer than the pinned width matches up to that width, the
+  next character then looks like token continuation, and the finding is
+  discarded instead of reported. Silence is the worst possible output here.
+  Where the provider's own source states a range rather than a value — npm's
+  redactor matches `{36,48}`, GitHub asks integrators to support tokens up to
+  255 characters — write the minimum and let the match run to the end of the
+  token.
 - **Regenerate the rule catalogue** with
   `REDACT_WRITE_RULE_CATALOGUE=1 cargo test --test rule_catalogue`. `docs/rules.md`
   is generated from the compiled rules and a test compares it, so a new rule that

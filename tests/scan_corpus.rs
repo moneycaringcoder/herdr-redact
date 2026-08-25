@@ -404,6 +404,7 @@ See the sk-learn docs, and the sk-ms-version header, for the migration notes.
 
 Grafana-shaped token with the wrong checksum: glsa_0123456789abcdefghijklmnopqrstuv_950d9027
 Grafana-shaped token with a 31-character body: glsa_0123456789abcdefghijklmnopqrstu_950d9026
+npm-shaped token with a 35-character body: npm_0123456789abcdefghijklmnopqrstuvwxy
 
 Not a token: eyJZZZZZZZZZZZZ.aaaaaaaaaaaaaa.bbbbbbbbbbbbbb
 Also not a token: eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.ZmFrZXNpZ25hdHVyZQ
@@ -749,6 +750,48 @@ fn grafana_service_account_token_requires_its_checksum() {
     );
     assert_eq!(matches.len(), 1, "{matches:?}");
     assert_eq!(matches[0].pattern, "grafana_service_account_token");
+}
+
+#[test]
+fn npm_token_covers_the_npms_prefix_and_a_longer_body() {
+    let rules = builtin();
+    // npm's own redactor, `lib/matchers.js`, matches `npms_` as well as `npm_`.
+    let matches = scan("npms_0123456789abcdefghijklmnopqrstuvwxyz", &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "npm_token");
+
+    // A body longer than the 36 characters npm's examples show is reported
+    // whole. Pinned to exactly 36, the match would end mid-token and the
+    // standalone check would then throw the finding away — a credential found
+    // and silently discarded, which is worse than one never matched.
+    let longer = "npm_0123456789abcdefghijklmnopqrstuvwxyz0123";
+    let matches = scan(longer, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "npm_token");
+    assert_eq!(matches[0].value_len, longer.chars().count());
+
+    // The base64-blob defence still applies: a token character after the run
+    // means this is a slice of something longer, not a token.
+    assert!(scan(&format!("{longer}+more"), &rules, &KEY).is_empty());
+    // Shorter than npm's own minimum stays quiet.
+    assert!(scan("npm_0123456789abcdefghijklmnopqrstuvwxy", &rules, &KEY).is_empty());
+}
+
+#[test]
+fn github_fine_grained_token_survives_a_longer_component() {
+    let rules = builtin();
+    // GitHub publishes that its tokens will lengthen and asks integrators to
+    // support up to 255 characters, so a token wider than today's layout must
+    // report rather than be matched to the old width and discarded.
+    let vector = vector("github_pat");
+    let longer = format!("{}0123", vector.text);
+    let matches = scan(&longer, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, "github_pat");
+    assert_eq!(matches[0].value_len, longer.chars().count());
+
+    // A component shorter than today's layout is still not a token.
+    assert!(scan(&vector.text[..vector.text.len() - 1], &rules, &KEY).is_empty());
 }
 
 #[test]
