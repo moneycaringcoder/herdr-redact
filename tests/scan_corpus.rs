@@ -231,6 +231,16 @@ const POSITIVE: &[Vector] = &[
         value: "AGE-SECRET-KEY-1QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE",
         preview: "AGE-\u{2026}KHCE",
     },
+    // Microsoft's own generator produces this checksum for the 80 characters in
+    // front of it. Synthetic, and obviously so: the entropy is a run of `E`s and
+    // the reserved bytes are zeros. `ACOG` is the Azure AI Services signature.
+    Vector {
+        rule: "microsoft_cask_key",
+        confidence: Confidence::Strong,
+        text: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1gg==",
+        value: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1gg==",
+        preview: "EEEE\u{2026}gg==",
+    },
     Vector {
         rule: "jdbc_url_password",
         confidence: Confidence::Strong,
@@ -471,6 +481,8 @@ Docker metadata has "auth": "bm90LWEtZG9ja2VyLWNyZWRlbnRpYWw="
 Docker metadata has "auth": "RVhBTVBMRTpGQUtFOkExQTFBMUExQTFBMQ=="
 
 JDBC URL without a password: jdbc:postgresql://db.invalid/app?user=EXAMPLE
+CASK-shaped key with a tampered checksum: EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1ga==
+CASK-shaped key in the short form with a tampered checksum: EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4aka
 jdbc:postgresql://db.invalid/app?password=${DB_PASS}
 jdbc:mysql://db.invalid/app;password=changeme
 Generic URL query: https://db.invalid/app?password=FAKE_A1A1A1A1A1A1A1A1A1A1
@@ -883,6 +895,52 @@ fn github_fine_grained_token_survives_a_longer_component() {
 
     // A component shorter than today's layout is still not a token.
     assert!(scan(&vector.text[..vector.text.len() - 1], &rules, &KEY).is_empty());
+}
+
+#[test]
+fn microsoft_cask_key_validates_every_signature_family_in_both_forms() {
+    let rules = builtin();
+    // One synthetic key per provider signature listed in Microsoft's
+    // `LegacyCaskProviderSignatures`. The signature sits inside the checksummed
+    // region, so each carries its own checksum.
+    for key in [
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1gg==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZAC2kyB8g==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZEG2Pbflw==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZDO1Eg5mw==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZMP1WuvqQ==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZCStTKIrw==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZFR2Rq9eg==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABAZMR48G04A==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABmsql2G4XZw==",
+    ] {
+        // The 88-character form ends `==`, which `continues_token_after` counts
+        // as token continuation. The regex has to consume that padding or the
+        // standalone check throws the finding away.
+        assert_eq!(key.len(), 88);
+        let matches = scan(key, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{key}: {matches:?}");
+        assert_eq!(matches[0].pattern, "microsoft_cask_key");
+        assert_eq!(matches[0].value_len, 88);
+
+        // The 84-character form is the same key without its last four
+        // characters, so it carries four of the six checksum characters.
+        let short = &key[..84];
+        let matches = scan(short, &rules, &KEY);
+        assert_eq!(matches.len(), 1, "{short}: {matches:?}");
+        assert_eq!(matches[0].pattern, "microsoft_cask_key");
+        assert_eq!(matches[0].value_len, 84);
+    }
+
+    // One character of the checksum in each form, and one character of the
+    // checksummed region.
+    for key in [
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1ga==",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEJQQJ99CHAAAAAAAAAAAAAAABACOG4aka",
+        "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEFJQQJ99CHAAAAAAAAAAAAAAABACOG4ak1gg==",
+    ] {
+        assert!(scan(key, &rules, &KEY).is_empty(), "matched {key}");
+    }
 }
 
 #[test]

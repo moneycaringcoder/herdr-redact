@@ -32,6 +32,7 @@ Strong confidence means the format is structurally identifiable; weak confidence
 | `huggingface_token` | Hugging Face token | strong | `default` | 1 |
 | `supabase_access_token` | Supabase personal access token | strong | `default` | 1 |
 | `sentry_auth_token` | Sentry auth token | strong | `default` | 1 |
+| `microsoft_cask_key` | Microsoft common annotated security key | strong | `default` | 1 |
 | `age_secret_key` | age secret key | strong | `default` | 1 |
 | `jdbc_url_password` | JDBC URL password | strong | `default` | 1 |
 | `docker_registry_auth` | Docker registry auth | strong | `default` | 1 |
@@ -249,6 +250,15 @@ Matches `sbp_` or `sbp_oauth_` followed by exactly 40 lowercase hexadecimal char
 - **Rotation guidance:** https://docs.sentry.io/api/auth/
 
 Matches the `sntryu_`, `sntrya_`, and `sntryi_` markers followed by exactly 64 lowercase hexadecimal characters. Sentry's own generator produces the body from a 32-byte hexadecimal token, and its column width of 71 characters corroborates the seven-character marker plus that body. The organisation-token marker `sntrys_` carries a base64 JSON document instead and is deliberately not matched.
+
+## `microsoft_cask_key`
+
+- **Label:** Microsoft common annotated security key
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** no provider page — A common annotated key can come from any of a dozen Azure services, and only its four-character provider signature says which; rotate it in the portal for that resource.
+
+Matches Microsoft's common annotated security key layout — 52 base64 characters, the `JQQJ9` marker at offset 52, a key-kind character, an allocation date, reserved bytes, a four-character provider signature, and a checksum — then recomputes that checksum: Marvin32 over the first 60 decoded bytes, seeded from Microsoft's `Default0` literal, rendered in base62 and re-canonicalised as base64. A key of exactly the right shape with the wrong checksum does not fire. Both the 84-character and the 88-character forms are covered, and the trailing base64 padding of the longer form is consumed so the finding is not discarded as part of a longer token. The provider signature only selects which service the key belongs to.
 
 ## `age_secret_key`
 

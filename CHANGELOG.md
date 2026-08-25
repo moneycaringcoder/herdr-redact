@@ -46,6 +46,23 @@ release, with the old name accepted as an alias for at least one minor cycle.
   checksum input, such a token is not matched, and the rule says so rather than
   pretending otherwise. The two ledger entries this supersedes, `glrt-` and
   `glrtr-`, are removed.
+- A rule for Microsoft's common annotated security keys, `microsoft_cask_key`,
+  which cover Azure AI and OpenAI services, App Configuration, Azure DevOps
+  personal access tokens, Event Grid, Maps and Communication Services. Microsoft
+  publishes both the pattern (`IdentifiableSecrets.CommonAnnotatedKeyRegexPattern`)
+  and the checksum: Marvin32 over the first 60 decoded bytes, seeded from the
+  `Default0` literal, rendered in base62 and then re-canonicalised by a base64
+  encoder. All of that is recomputed, so a key of exactly the right shape with
+  the wrong checksum does not fire. The Marvin32 implementation is checked
+  against Microsoft's own known-answer test, which is itself taken from
+  SymCrypt, because a subtly wrong checksum primitive fails silently: keys would
+  simply stop being reported.
+  One rule covers the whole family, because the four-character provider
+  signature sits inside the checksummed region and only selects which service
+  the key belongs to. The 88-character form ends in `==`, which the standalone
+  check counts as token continuation, so the pattern consumes that padding —
+  otherwise every key of that length would have been found and then discarded,
+  which is the shape the npm rule was fixed for.
 
 ### Fixed
 
