@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::config::Config;
-use crate::findings::{Store, SUPPRESSIONS_NOTE_SUFFIX};
+use crate::findings::Store;
 use crate::model::{Alert, Calibration, Confidence, Finding, Report};
 use crate::scan::{RotationGuidance, Rules};
 use crate::{daemon, Result};
@@ -442,7 +442,7 @@ fn summary_lines(report: &Report) -> Vec<String> {
     let total = report.findings.len();
     let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
     let live = total - acknowledged;
-    let suppressions = active_suppression_count(report);
+    let suppression_count = report.suppression_count;
 
     if total == 0 {
         // Four different reasons for an empty table, and the user has to be able
@@ -491,10 +491,10 @@ fn summary_lines(report: &Report) -> Vec<String> {
             ));
         }
     }
-    if suppressions > 0 {
+    if suppression_count > 0 {
         lines.push(format!(
-            "{suppressions}{SUPPRESSIONS_NOTE_SUFFIX} Each ignores one exact value for one rule, \
-             globally across panes."
+            "{suppression_count} permanent value suppression(s) active. Each ignores one exact \
+             value for one rule, globally across panes."
         ));
     }
 
@@ -517,7 +517,7 @@ fn summary_lines(report: &Report) -> Vec<String> {
         ));
     }
 
-    if report.notes.iter().any(|note| !is_suppression_note(note)) {
+    if !report.notes.is_empty() {
         // Deliberately does not contain the phrase "nothing found": a reader
         // skimming, or a script grepping, must not be able to take those two
         // words out of a report that says the opposite.
@@ -529,22 +529,6 @@ fn summary_lines(report: &Report) -> Vec<String> {
     }
 
     lines
-}
-
-fn active_suppression_count(report: &Report) -> usize {
-    report
-        .notes
-        .iter()
-        .find_map(|note| {
-            note.strip_suffix(SUPPRESSIONS_NOTE_SUFFIX)
-                .and_then(|count| count.parse().ok())
-        })
-        .unwrap_or(0)
-}
-
-fn is_suppression_note(note: &str) -> bool {
-    note.strip_suffix(SUPPRESSIONS_NOTE_SUFFIX)
-        .is_some_and(|count| count.parse::<usize>().is_ok())
 }
 
 fn panes(count: usize) -> String {
@@ -777,17 +761,13 @@ fn push_legend(out: &mut String, report: &Report, width: usize) {
 /// would not compile, a read that failed. They belong on screen: silently
 /// dropping them renders as a suspiciously clean report.
 fn notes_section(notes: &[String], width: usize) -> String {
-    let visible: Vec<&String> = notes
-        .iter()
-        .filter(|note| !is_suppression_note(note))
-        .collect();
     let mut out = String::new();
-    if visible.is_empty() {
+    if notes.is_empty() {
         return out;
     }
     out.push('\n');
     push_line(&mut out, "notes", width);
-    for note in visible {
+    for note in notes {
         push_wrapped(&mut out, "  ", "    ", note, width);
     }
     out
@@ -912,12 +892,8 @@ pub fn report_json_with_quiet(report: &Report, quiet_until: Option<u64>, now: u6
 
     let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
     let quiet_remaining = quiet_until.map(|until| until.saturating_sub(now));
-    let suppressions = active_suppression_count(report);
-    let notes: Vec<&String> = report
-        .notes
-        .iter()
-        .filter(|note| !is_suppression_note(note))
-        .collect();
+    let suppressions = report.suppression_count;
+    let notes = report.notes.as_slice();
     let value = json!({
         // Bumped only when a key changes meaning, so a script can refuse a
         // shape it does not understand rather than misread it.
@@ -1074,12 +1050,8 @@ pub fn report_sarif_with_quiet(report: &Report, quiet_until: Option<u64>, now: u
 
     let acknowledged = report.findings.iter().filter(|f| f.acknowledged).count();
     let quiet_remaining = quiet_until.map(|until| until.saturating_sub(now));
-    let suppressions = active_suppression_count(report);
-    let notes: Vec<&String> = report
-        .notes
-        .iter()
-        .filter(|note| !is_suppression_note(note))
-        .collect();
+    let suppressions = report.suppression_count;
+    let notes = report.notes.as_slice();
     let value = json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",

@@ -234,6 +234,7 @@ fn a_suppression_survives_reload_and_drops_the_value_in_every_pane() {
 
     let mut store = Store::load(&config);
     assert_eq!(store.suppression_count(), 1);
+    assert_eq!(store.report(Vec::new()).suppression_count, 1);
     assert!(
         store
             .observe(&pane("wF:p9"), &[a_match("aws_access_key_id", 7)], 200)
