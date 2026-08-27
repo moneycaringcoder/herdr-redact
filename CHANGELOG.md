@@ -11,6 +11,18 @@ one, and they are the `pattern` and `ruleId` fields of the JSON and SARIF
 output, so renaming one is a breaking change and will only happen in a major
 release, with the old name accepted as an alias for at least one minor cycle.
 
+## [Unreleased]
+
+### Added
+
+- A rule for Grafana Cloud access-policy tokens,
+  `grafana_cloud_access_policy_token`. It accepts the provider's `glc_` prefix
+  only when the remainder is canonically padded standard base64 that decodes to
+  valid JSON with a `k` field containing exactly 40 hexadecimal characters.
+  Wrong-alphabet or malformed base64, non-JSON bodies, missing key fields, and
+  keys with the wrong length or charset stay quiet. The superseded `glc_`
+  declined-ledger entry has been removed.
+
 ## [0.1.3] - 2026-08-25
 
 ### Added
