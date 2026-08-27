@@ -18,6 +18,9 @@ release, with the old name accepted as an alias for at least one minor cycle.
 - Suppression counts now travel as structured report data instead of being
   encoded into and re-parsed from a human-readable note. Text, JSON, and SARIF
   output all derive from the numeric count.
+- The upstream API contract canary now covers `pane.process_info`, including
+  the nested pane and foreground-process fields the plugin reads, so a breaking
+  schema change cannot leave process context silently unmonitored.
 
 ## [0.1.3] - 2026-08-25
 
