@@ -122,6 +122,78 @@ fn first_matching_value_wins_for_each_scalar() {
 }
 
 #[test]
+fn scoped_backfill_and_rule_packs_follow_scalar_and_list_precedence() {
+    let config = Config::from_json(
+        r#"{
+            "backfill_lines": 5000,
+            "rule_packs": ["default"],
+            "overlays": [
+                {
+                    "match": {"workspace_id": "w1"},
+                    "backfill_lines": 50000,
+                    "rule_packs": ["narrow"]
+                },
+                {
+                    "match": {"workspace_label": "Company"},
+                    "backfill_lines": 0,
+                    "rule_packs": ["default"]
+                }
+            ]
+        }"#,
+    )
+    .expect("config");
+
+    let effective = config.effective_for(&pane("w1", "Company", "/work/company"));
+    assert_eq!(effective.backfill_lines, 20_000);
+    assert_eq!(effective.rule_packs, ["default", "narrow", "default"]);
+
+    let zero_backfill = config.effective_for(&pane("w2", "Company", "/work/company"));
+    assert_eq!(
+        zero_backfill.backfill_lines, 0,
+        "zero must keep disabling startup backfill in an overlay"
+    );
+    assert_eq!(zero_backfill.rule_packs, ["default", "default"]);
+}
+
+#[test]
+fn invalid_scoped_keys_are_rejected_like_top_level_keys() {
+    assert!(Config::from_json(r#"{"backfill_lines": -1}"#).is_err());
+    assert!(Config::from_json(r#"{"rule_packs": ["narrow", 7]}"#).is_err());
+
+    let config = Config::from_json(
+        r#"{
+            "backfill_lines": 900,
+            "rule_packs": ["default"],
+            "overlays": [
+                {
+                    "match": {"workspace_id": "w1"},
+                    "backfill_lines": -1
+                },
+                {
+                    "match": {"workspace_id": "w1"},
+                    "rule_packs": ["narrow", 7]
+                },
+                {
+                    "match": {"workspace_id": "w1"},
+                    "backfill_line": 100
+                }
+            ]
+        }"#,
+    )
+    .expect("malformed overlays do not invalidate the base configuration");
+
+    assert!(config.overlays.is_empty());
+    assert_eq!(config.notes.len(), 3);
+    assert!(config.notes[0].contains("malformed overlay 1"));
+    assert!(config.notes[1].contains("malformed overlay 2"));
+    assert!(config.notes[2].contains("malformed overlay 3"));
+    assert!(config.notes[2].contains("unknown field `backfill_line`"));
+    let effective = config.effective_for(&pane("w1", "Company", "/work/company"));
+    assert_eq!(effective.backfill_lines, 900);
+    assert_eq!(effective.rule_packs, ["default"]);
+}
+
+#[test]
 fn every_matching_overlay_appends_lists_in_file_order() {
     let config = Config::from_json(
         r#"{

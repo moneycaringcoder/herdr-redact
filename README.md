@@ -481,10 +481,12 @@ pane id typed wrongly shows up as a path rather than as an empty result.
 ### Per-workspace and per-repository overlays
 
 An overlay has a `match` object containing exactly one of `workspace_id`,
-`workspace_label`, or `path_prefix`, plus any of the optional configuration keys
-from the table above. A path prefix is matched against the pane working
-directory reported by `session.snapshot`; redact never walks the working tree or
-looks for a `.git` directory.
+`workspace_label`, or `path_prefix`. The only other accepted keys are
+`interval_seconds`, `lines`, `backfill_lines`, `scan_all_panes`,
+`env_assignments`, `rule_packs`, `notify`, `patterns`, `allowlist`,
+`ignore_panes`, and `max_findings`. A path prefix is matched against the pane
+working directory reported by `session.snapshot`; redact never walks the
+working tree or looks for a `.git` directory.
 
 This configuration keeps a personal-key detector active everywhere, but
 allowlists its distinctive test value in a noisy company repository. A pane in
@@ -517,12 +519,13 @@ The other matcher forms are `"match": {"workspace_id": "w3"}` and
 `"match": {"workspace_label": "Company"}`.
 
 Overlay order is significant. For each scalar (`interval_seconds`, `lines`,
-`scan_all_panes`, `env_assignments`, `notify`, and `max_findings`), the first
-matching overlay that sets it wins. Lists (`patterns`, `allowlist`, and
-`ignore_panes`) from **all** matching overlays append to the base lists in file
-order; overlays never replace a list. Path prefixes are also applied in file
-order, not longest-prefix order, so a matching short prefix followed by a
-matching longer prefix contributes both lists in that declared order.
+`backfill_lines`, `scan_all_panes`, `env_assignments`, `notify`, and
+`max_findings`), the first matching overlay that sets it wins. Lists
+(`rule_packs`, `patterns`, `allowlist`, and `ignore_panes`) from **all** matching
+overlays append to the base lists in file order; overlays never replace a list.
+Path prefixes are also applied in file order, not longest-prefix order, so a
+matching short prefix followed by a matching longer prefix contributes both
+lists in that declared order.
 
 A malformed overlay is ignored with a note while the top-level configuration
 continues to scan. It never turns a configuration typo into a dead scanner. An
