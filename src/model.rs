@@ -287,6 +287,8 @@ impl Alert {
 pub struct Report {
     /// Unacknowledged first, then most recent first. The renderer does not sort.
     pub findings: Vec<Finding>,
+    /// Number of permanent exact-value suppressions currently active.
+    pub suppression_count: usize,
     pub panes_scanned: usize,
     /// Panes herdr reported but that we chose not to read (not an agent pane,
     /// with `scan_all_panes` off; on the config's ignore list; or this process's
