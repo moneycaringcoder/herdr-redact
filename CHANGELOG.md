@@ -11,6 +11,14 @@ one, and they are the `pattern` and `ruleId` fields of the JSON and SARIF
 output, so renaming one is a breaking change and will only happen in a major
 release, with the old name accepted as an alias for at least one minor cycle.
 
+## [Unreleased]
+
+### Fixed
+
+- The upstream API contract canary now covers `pane.process_info`, including
+  the nested pane and foreground-process fields the plugin reads, so a breaking
+  schema change cannot leave process context silently unmonitored.
+
 ## [0.1.3] - 2026-08-25
 
 ### Added
