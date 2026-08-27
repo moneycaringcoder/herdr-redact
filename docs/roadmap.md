@@ -20,8 +20,11 @@ rather than on a timer removes the lag without raising the read budget.
 This is blocked on upstream and should not be worked around with a shorter
 interval, which would only spend more of the read budget to shrink the window.
 
-What 0.8.0 actually offers, and why each route to faking it either breaks one of
-the two rules or claims more than it can prove, is recorded in
-[issue #15](https://github.com/moneycaringcoder/herdr-redact/issues/15) so nobody
-has to derive it again.
+The event surface was rechecked against herdr 0.8.2 on 2026-08-27.
+`pane.output_changed` remains a non-emitted event type rather than a usable
+subscription, so the upstream-blocked conclusion is unchanged and
+`min_herdr_version` stays at 0.8.0. The captures and why each attempted
+workaround either breaks one of the two rules or claims more than it can prove
+are recorded in [the protocol notes](herdr-protocol.md) and
+[issue #15](https://github.com/moneycaringcoder/herdr-redact/issues/15).
 
