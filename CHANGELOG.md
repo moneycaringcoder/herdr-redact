@@ -26,9 +26,14 @@ release, with the old name accepted as an alias for at least one minor cycle.
   revalidation against herdr 0.8.2. The read revisions, connection framing and
   missing output subscription still require polling; the minimum supported
   herdr version remains 0.8.0.
+- The scan-cost benchmark now measures config-file loading plus rule
+  compilation and reports that recurring cost as a share of the minimum scan
+  interval.
 
 ### Fixed
 
+- Human quiet-mode status now shows the expiry as a local date and time alongside
+  the remaining duration instead of exposing a raw Unix epoch.
 - Workspace and repository overlays now apply `backfill_lines` and `rule_packs`
   instead of silently ignoring them.
 - Suppression counts now travel as structured report data instead of being

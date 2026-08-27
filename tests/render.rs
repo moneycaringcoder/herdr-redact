@@ -26,6 +26,7 @@ use redact::render::{
     abbreviate, badge, calibration_text, report_json, report_json_with_quiet,
     report_sarif_with_quiet, report_text, report_text_with_quiet, BADGE_COLUMNS, MIN_COLUMNS,
 };
+use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Test-local display width
@@ -881,11 +882,16 @@ fn the_sarif_snapshot_carries_findings_disposition_provenance_and_scan_quality()
 }
 
 #[test]
-fn quiet_banner_names_its_expiry_and_says_collection_continues() {
+fn quiet_banner_uses_local_expiry_time_and_says_collection_continues() {
     let text = report_text_with_quiet(&populated(), 80, Some(2_000), 1_000);
     let flat = flatten(&text);
+    let local_expiry =
+        Regex::new(r"QUIET until \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local time \(16m remaining\)")
+            .unwrap();
 
-    assert!(flat.contains("QUIET until Unix time 2000"), "{text}");
+    assert!(local_expiry.is_match(&flat), "{text}");
+    assert!(!flat.contains("Unix time"), "{text}");
+    assert!(!flat.contains("2000"), "{text}");
     assert!(
         flat.contains("findings are still being collected"),
         "{text}"

@@ -393,9 +393,13 @@ fn quiet(args: &[String]) -> Result<()> {
     } else {
         ""
     };
+    let now = redact::model::now();
     println!(
-        "redact: quiet until Unix time {}{}; scanning and finding collection continue.",
-        started.until, suffix
+        "redact: quiet until {} local time ({} remaining){}; scanning and finding collection \
+         continue.",
+        render::quiet_expiry_time(started.until),
+        daemon::quiet_remaining(started.until, now),
+        suffix
     );
     Ok(())
 }
@@ -416,9 +420,9 @@ fn status() -> Result<()> {
     }
     if let Some(until) = daemon::quiet_until() {
         println!(
-            "redact: quiet for another {}, until Unix time {}; findings are still being collected.",
-            daemon::quiet_remaining(until, redact::model::now()),
-            until
+            "redact: quiet until {} local time ({} remaining); findings are still being collected.",
+            render::quiet_expiry_time(until),
+            daemon::quiet_remaining(until, redact::model::now())
         );
     } else {
         println!("redact: loud.");
