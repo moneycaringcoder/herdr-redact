@@ -199,6 +199,16 @@ const POSITIVE: &[Vector] = &[
         value: "glsa_0123456789abcdefghijklmnopqrstuv_950d9026",
         preview: "glsa\u{2026}9026",
     },
+    // Standard base64 of
+    // `{"k":"fa11..." (40 hex),"n":"obviously-fake","id":0}`. The filler
+    // cannot be a credential, but it exercises the same decoded structure.
+    Vector {
+        rule: "grafana_cloud_access_policy_token",
+        confidence: Confidence::Strong,
+        text: "glc_eyJrIjoiZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMSIsIm4iOiJvYnZpb3VzbHktZmFrZSIsImlkIjowfQ==",
+        value: "glc_eyJrIjoiZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMSIsIm4iOiJvYnZpb3VzbHktZmFrZSIsImlkIjowfQ==",
+        preview: "glc_\u{2026}fQ==",
+    },
     Vector {
         rule: "huggingface_token",
         confidence: Confidence::Strong,
@@ -448,6 +458,11 @@ See the sk-learn docs, and the sk-ms-version header, for the migration notes.
 
 Grafana-shaped token with the wrong checksum: glsa_0123456789abcdefghijklmnopqrstuv_950d9027
 Grafana-shaped token with a 31-character body: glsa_0123456789abcdefghijklmnopqrstu_950d9026
+Grafana Cloud prefix with a non-base64 body: glc_not-base64
+Grafana Cloud body that decodes cleanly but is not JSON: glc_bm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24t
+Grafana Cloud JSON with no key field: glc_eyJuIjoib2J2aW91c2x5LWZha2UtcGxhY2Vob2xkZXItbmFtZS13aXRoLXBhZGRpbmciLCJpZCI6MH0=
+Grafana Cloud JSON with a 39-character key: glc_eyJrIjoiZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExIiwibiI6Im9idmlvdXNseS1mYWtlIiwiaWQiOjB9
+Grafana Cloud JSON with a non-hexadecimal key: glc_eyJrIjoiZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExZyIsIm4iOiJvYnZpb3VzbHktZmFrZSIsImlkIjowfQ==
 npm-shaped token with a 35-character body: npm_0123456789abcdefghijklmnopqrstuvwxy
 Supabase-shaped token with a 39-character body: sbp_fa11fa11fa11fa11fa11fa11fa11fa11fa11fa1
 Supabase-shaped token with an uppercase body: sbp_FA11FA11FA11FA11FA11FA11FA11FA11FA11FA11
@@ -864,6 +879,25 @@ fn grafana_service_account_token_requires_its_checksum() {
     );
     assert_eq!(matches.len(), 1, "{matches:?}");
     assert_eq!(matches[0].pattern, "grafana_service_account_token");
+}
+
+#[test]
+fn grafana_cloud_access_policy_token_requires_decoded_key_structure() {
+    let rules = builtin();
+    for token in [
+        "glc_not-base64",
+        "glc_bm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24tbm90LWpzb24t",
+        "glc_eyJuIjoib2J2aW91c2x5LWZha2UtcGxhY2Vob2xkZXItbmFtZS13aXRoLXBhZGRpbmciLCJpZCI6MH0=",
+        "glc_eyJrIjoiZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExIiwibiI6Im9idmlvdXNseS1mYWtlIiwiaWQiOjB9",
+        "glc_eyJrIjoiZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExMWZhMTFmYTExZmExZyIsIm4iOiJvYnZpb3VzbHktZmFrZSIsImlkIjowfQ==",
+    ] {
+        assert!(scan(token, &rules, &KEY).is_empty(), "matched {token}");
+    }
+
+    let vector = vector("grafana_cloud_access_policy_token");
+    let matches = scan(vector.text, &rules, &KEY);
+    assert_eq!(matches.len(), 1, "{matches:?}");
+    assert_eq!(matches[0].pattern, vector.rule);
 }
 
 #[test]

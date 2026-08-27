@@ -25,6 +25,7 @@ const DEFAULT_RULES: &[(&str, Confidence)] = &[
     ("gitlab_pat", Confidence::Strong),
     ("gitlab_routable_token", Confidence::Strong),
     ("grafana_service_account_token", Confidence::Strong),
+    ("grafana_cloud_access_policy_token", Confidence::Strong),
     ("huggingface_token", Confidence::Strong),
     ("supabase_access_token", Confidence::Strong),
     ("sentry_auth_token", Confidence::Strong),

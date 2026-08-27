@@ -126,7 +126,7 @@ pub struct RejectedFormat {
     pub reason: &'static str,
 }
 
-const REJECTED_FORMATS: [RejectedFormat; 67] = [
+const REJECTED_FORMATS: [RejectedFormat; 66] = [
     // The GitLab entries below recorded "no provider-controlled source" as their
     // reason, which a research pass disproved: GitLab is open source, and its own
     // code states the grammar. They stay declined for a different and much
@@ -360,11 +360,6 @@ const REJECTED_FORMATS: [RejectedFormat; 67] = [
         format: "Notion integration token",
         marker: "ntn_",
         reason: "The provider documents the value as opaque and advises against pattern matching.",
-    },
-    RejectedFormat {
-        format: "Grafana Cloud access policy token",
-        marker: "glc_",
-        reason: "The recorded reason — that the marker names a token rather than being part of the secret — is factually wrong: `glc_` is the literal opening of the value. Grafana's own Cloud API documentation shows `\"token\": \"glc_eyJrIjoi…\"`, and the body base64-decodes to a JSON object carrying a 40-character hexadecimal key, a name, and an id. A decode-and-validate rule in the style of the JWT rule is therefore available; this entry records the corrected fact rather than the old excuse.",
     },
     RejectedFormat {
         format: "OpenAI organization identifier",
@@ -1122,6 +1117,23 @@ fn builtin_rules(env_assignments: bool, enabled_packs: &[RulePack]) -> Vec<Rule>
         )
         .standalone()
         .check(is_grafana_service_account_token),
+        // Grafana Cloud access-policy tokens carry standard base64 of a JSON
+        // object after `glc_`. The `k` member is the credential material: the
+        // Cloud API's published example decodes to a 40-character hexadecimal
+        // value there. Decoding, parsing, and checking that member turns the
+        // prefix into a structural rule rather than trusting the marker alone.
+        Rule::new(
+            "grafana_cloud_access_policy_token",
+            "Grafana Cloud access policy token",
+            Confidence::Strong,
+            "Matches the `glc_` prefix followed by canonically padded standard base64, then requires the decoded value to be a JSON object whose `k` field is exactly 40 hexadecimal characters. URL-safe or malformed base64, non-JSON bodies, and JSON without the right key field are rejected.",
+            RotationGuidance::Url(
+                "https://grafana.com/docs/grafana-cloud/security-and-account-management/authentication-and-permissions/access-policies/",
+            ),
+            r"\bglc_[A-Za-z0-9+/]{64,}={0,2}",
+        )
+        .standalone()
+        .check(is_grafana_cloud_access_policy_token),
         Rule::new(
             "huggingface_token",
             "Hugging Face token",
@@ -1387,6 +1399,29 @@ fn is_grafana_service_account_token(caps: &Captures<'_>) -> bool {
         encoded[index * 2 + 1] = HEX[usize::from(byte & 0x0f)];
     }
     checksum.as_bytes() == encoded.as_slice()
+}
+
+/// A Grafana Cloud access-policy token is `glc_` plus standard base64 of JSON.
+/// The credential itself is the 40-character hexadecimal string in `k`.
+fn is_grafana_cloud_access_policy_token(caps: &Captures<'_>) -> bool {
+    let Some(encoded) = caps[0].strip_prefix("glc_") else {
+        return false;
+    };
+    // Grafana's generator uses standard base64, whose encoded output is padded
+    // to a multiple of four. `base64_decode` checks padding placement and
+    // canonical trailing bits.
+    if !encoded.len().is_multiple_of(4) {
+        return false;
+    }
+    let Some(bytes) = base64_decode(encoded) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    json.get("k")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|key| key.len() == 40 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// IEEE CRC-32 used by Grafana's service-account token generator. It lives here
