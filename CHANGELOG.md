@@ -11,6 +11,14 @@ one, and they are the `pattern` and `ruleId` fields of the JSON and SARIF
 output, so renaming one is a breaking change and will only happen in a major
 release, with the old name accepted as an alias for at least one minor cycle.
 
+## [Unreleased]
+
+### Fixed
+
+- Suppression counts now travel as structured report data instead of being
+  encoded into and re-parsed from a human-readable note. Text, JSON, and SARIF
+  output all derive from the numeric count.
+
 ## [0.1.3] - 2026-08-25
 
 ### Added

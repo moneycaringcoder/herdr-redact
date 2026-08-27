@@ -166,6 +166,7 @@ fn populated() -> Report {
 
     Report {
         findings: vec![finding("a1b2c3", "AWS access key ID", "claude"), weak],
+        suppression_count: 0,
         panes_scanned: 4,
         panes_skipped: 2,
         panes_unread: 0,
@@ -299,6 +300,7 @@ fn no_line_ever_exceeds_the_requested_width() {
 
     let report = Report {
         findings: vec![long, emoji, named],
+        suppression_count: 0,
         panes_scanned: 9,
         panes_skipped: 3,
         panes_unread: 1,
@@ -499,6 +501,8 @@ fn active_suppressions_are_visible_even_when_there_are_no_findings() {
     store.prune_to(&[]);
     let report = store.report(Vec::new());
     assert!(report.findings.is_empty());
+    assert_eq!(report.suppression_count, 12);
+    assert!(report.notes.is_empty());
 
     let text = flatten(&report_text(&report, 80));
     assert!(
@@ -517,6 +521,19 @@ fn active_suppressions_are_visible_even_when_there_are_no_findings() {
     drop(store);
     std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn zero_suppressions_render_as_zero_without_a_note() {
+    let report = empty_but_fine();
+    let text = flatten(&report_text(&report, 80));
+    assert!(
+        !text.contains("permanent value suppression"),
+        "an inactive suppression should not add prose: {text}"
+    );
+
+    let json: serde_json::Value = serde_json::from_str(&report_json(&report)).expect("report JSON");
+    assert_eq!(json["counts"]["suppressions"], 0);
 }
 
 #[test]
@@ -740,6 +757,7 @@ fn the_sarif_snapshot_carries_findings_disposition_provenance_and_scan_quality()
 
     let report = Report {
         findings: vec![strong, weak, acknowledged],
+        suppression_count: 2,
         panes_scanned: 5,
         panes_skipped: 2,
         panes_unread: 1,
@@ -836,6 +854,7 @@ fn the_sarif_snapshot_carries_findings_disposition_provenance_and_scan_quality()
     let counts = &run["properties"]["counts"];
     assert_eq!(counts["findings"], 3);
     assert_eq!(counts["acknowledged"], 1);
+    assert_eq!(counts["suppressions"], 2);
     assert_eq!(counts["panesScanned"], 5);
     assert_eq!(counts["panesSkipped"], 2);
     assert_eq!(counts["panesUnread"], 1);
