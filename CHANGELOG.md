@@ -24,9 +24,14 @@ release, with the old name accepted as an alias for at least one minor cycle.
   Wrong-alphabet or malformed base64, non-JSON bodies, missing key fields, and
   keys with the wrong length or charset stay quiet. The superseded `glc_`
   declined-ledger entry has been removed.
+- The scan-cost benchmark now measures config-file loading plus rule
+  compilation and reports that recurring cost as a share of the minimum scan
+  interval.
 
 ### Fixed
 
+- Human quiet-mode status now shows the expiry as a local date and time alongside
+  the remaining duration instead of exposing a raw Unix epoch.
 - Workspace and repository overlays now apply `backfill_lines` and `rule_packs`
   instead of silently ignoring them.
 - Suppression counts now travel as structured report data instead of being
