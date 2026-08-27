@@ -425,14 +425,51 @@ fn render(
     out
 }
 
-/// The prose half of the view: what was scanned, what was found, and whether
-/// the scan can be trusted. Every state a report can be in has to be
-/// distinguishable here in words, without reading the table.
+/// Format a quiet expiry in the machine's local time for human-facing output.
+///
+/// Quiet markers are capped at four hours from the current time, so a value
+/// produced by the daemon is always representable by the platform clock. The
+/// fallback deliberately does not expose the stored epoch if a corrupt caller
+/// supplies a value outside that range.
+pub fn quiet_expiry_time(until: u64) -> String {
+    local_time(until).unwrap_or_else(|| "an unavailable local time".to_string())
+}
+
+#[cfg(unix)]
+fn local_time(until: u64) -> Option<String> {
+    let seconds = libc::time_t::try_from(until).ok()?;
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: `seconds` and `local` are valid pointers for the duration of the
+    // call. A non-null return means `localtime_r` initialized `local`.
+    let local = unsafe {
+        if libc::localtime_r(&seconds, local.as_mut_ptr()).is_null() {
+            return None;
+        }
+        local.assume_init()
+    };
+    Some(format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        local.tm_year.checked_add(1900)?,
+        local.tm_mon.checked_add(1)?,
+        local.tm_mday,
+        local.tm_hour,
+        local.tm_min,
+        local.tm_sec
+    ))
+}
+
+#[cfg(not(unix))]
+fn local_time(_until: u64) -> Option<String> {
+    None
+}
+
+/// The quiet-state prose is explicit about both hidden notifications and
+/// continuing collection, so a quiet scanner cannot look like a stopped one.
 fn quiet_line(until: u64, now: u64) -> String {
     format!(
-        "QUIET until Unix time {} ({} remaining): badges and notifications are hidden; findings \
+        "QUIET until {} local time ({} remaining): badges and notifications are hidden; findings \
          are still being collected.",
-        until,
+        quiet_expiry_time(until),
         daemon::quiet_remaining(until, now)
     )
 }

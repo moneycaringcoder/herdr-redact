@@ -28,6 +28,8 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Fixed
 
+- Human quiet-mode status now shows the expiry as a local date and time alongside
+  the remaining duration instead of exposing a raw Unix epoch.
 - Workspace and repository overlays now apply `backfill_lines` and `rule_packs`
   instead of silently ignoring them.
 - Suppression counts now travel as structured report data instead of being
