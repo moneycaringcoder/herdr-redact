@@ -25,6 +25,8 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Fixed
 
+- Workspace and repository overlays now apply `backfill_lines` and `rule_packs`
+  instead of silently ignoring them.
 - Suppression counts now travel as structured report data instead of being
   encoded into and re-parsed from a human-readable note. Text, JSON, and SARIF
   output all derive from the numeric count.

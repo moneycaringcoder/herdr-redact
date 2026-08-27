@@ -106,6 +106,7 @@ impl OverlayMatcher {
 /// overlay append in file order; path-prefix matches are not sorted by
 /// specificity. This deliberately makes precedence visible and deterministic.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Overlay {
     #[serde(rename = "match")]
     pub matcher: OverlayMatcher,
@@ -114,9 +115,13 @@ pub struct Overlay {
     #[serde(default)]
     pub lines: Option<u32>,
     #[serde(default)]
+    pub backfill_lines: Option<u32>,
+    #[serde(default)]
     pub scan_all_panes: Option<bool>,
     #[serde(default)]
     pub env_assignments: Option<bool>,
+    #[serde(default)]
+    pub rule_packs: Option<Vec<String>>,
     #[serde(default)]
     pub notify: Option<bool>,
     #[serde(default)]
@@ -135,8 +140,10 @@ impl Overlay {
             matcher,
             interval_seconds: None,
             lines: None,
+            backfill_lines: None,
             scan_all_panes: None,
             env_assignments: None,
+            rule_packs: None,
             notify: None,
             patterns: None,
             allowlist: None,
@@ -271,6 +278,12 @@ impl Config {
         if let Some(value) = matching.iter().find_map(|overlay| overlay.lines) {
             effective.lines = value.clamp(1, MAX_LINES);
         }
+        if let Some(value) = matching.iter().find_map(|overlay| overlay.backfill_lines) {
+            effective.backfill_lines = value;
+            if effective.backfill_lines > 0 {
+                effective.backfill_lines = effective.backfill_lines.clamp(1, MAX_LINES);
+            }
+        }
         if let Some(value) = matching.iter().find_map(|overlay| overlay.scan_all_panes) {
             effective.scan_all_panes = value;
         }
@@ -284,6 +297,9 @@ impl Config {
             effective.max_findings = value.max(1);
         }
         for overlay in matching {
+            if let Some(rule_packs) = &overlay.rule_packs {
+                effective.rule_packs.extend(rule_packs.iter().cloned());
+            }
             if let Some(patterns) = &overlay.patterns {
                 effective.patterns.extend(patterns.iter().cloned());
             }
