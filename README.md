@@ -209,6 +209,8 @@ herdr plugin install moneycaringcoder/herdr-redact
 Installing runs the plugin's build step for you, so you end up with a compiled `target/release/redact`
 and nothing further to do.
 
+Building the plugin requires Rust 1.88 or newer.
+
 To develop against a local checkout instead:
 
 ```sh
