@@ -15,6 +15,8 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ### Added
 
+- Rust 1.88 is now the declared minimum supported Rust version and is tested in
+  CI.
 - A rule for Grafana Cloud access-policy tokens,
   `grafana_cloud_access_policy_token`. It accepts the provider's `glc_` prefix
   only when the remainder is canonically padded standard base64 that decodes to
