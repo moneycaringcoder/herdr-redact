@@ -1,11 +1,31 @@
-# herdr socket notes for redact (verified against herdr 0.8.0, protocol 19)
+# herdr socket notes for redact (verified against herdr 0.8.0 and 0.8.2)
 
-Working notes for this plugin's socket client. Everything below was captured
-from a live herdr 0.8.0 server with a raw socket probe and from the bundled
-schema (`herdr api schema --json`), not inferred from documentation. The
-transport, badge and daemon-lifecycle sections repeat what
+Working notes for this plugin's socket client. The original observations were
+captured from a live herdr 0.8.0 server (protocol 19) with a raw socket probe and
+from the bundled schema (`herdr api schema --json`), not inferred from
+documentation. The scanning-relevant observations were revalidated on
+2026-08-27 against a locally installed herdr 0.8.2 server (protocol 20). That
+revalidation used the same raw
+newline-delimited JSON transport: 40 `pane.read` calls covered ten existing
+panes and all four sources, passive revision monitoring covered all ten panes,
+and framing, error and subscription probes used metadata-only requests. No
+input was sent to a pane. The one 0.8.0 capture that had used `pane.send_text`
+was therefore checked against the 0.8.2 implementation and upstream discussion
+rather than repeated; that provenance is called out at trap 4.
+
+The transport, badge and daemon-lifecycle sections repeat what
 `herdr-collide/docs/herdr-protocol.md` established; the `pane.read` section is
-new and is where this plugin's traps live.
+where this plugin's traps live.
+
+## 0.8.0 to 0.8.2
+
+There is no 0.8.1 tag or changelog entry; upstream goes directly from 0.8.0 to
+0.8.2. The scanner-adjacent part of the delta was reviewed from the 0.8.2
+changelog and schema. It adds `pane.input.set`, right-click passthrough through
+`pane.split.right_click`, experimental pane graphics layers, `agent_blocked`
+rejection when prompting an agent already at a question or approval, and
+marketplace indexing. None changes the pane-read or output-event contract the
+scanner depends on, so the minimum herdr version remains 0.8.0.
 
 ## Transport
 
@@ -28,6 +48,11 @@ failure : {"id":"<string>","error":{"code":"<string>","message":"<string>"}}\n
 - The server answers **one request per connection** and then sends EOF. Every
   call must be able to reconnect and retry once; that retry is also what carries
   the client across a `herdr update --handoff`.
+
+The 0.8.2 probes reconfirmed all three constraints. Sending two
+`session.snapshot` requests in one write produced one response for the first ID
+and then a connection reset; a normal single request produced one response and
+EOF.
 
 ## `pane.read` — the method this plugin is built on
 
@@ -75,6 +100,10 @@ counter (observed 6183 on a busy pane). `PaneReadResult.revision` was **0 for
 every pane and every source** in the live capture, including panes whose
 `PaneInfo.revision` was non-zero.
 
+Revalidated on 0.8.2: all 40 reads across ten panes and `visible`, `recent`,
+`recent_unwrapped` and `detection` returned `revision: 0`. Nine of those panes
+had a non-zero `PaneInfo.revision`.
+
 So `PaneReadResult.revision` **cannot** be used to skip an unchanged pane. A
 scanner that did would never scan anything and would report a permanently clean
 session. Change detection has to come from the text itself; this plugin hashes
@@ -93,6 +122,18 @@ It does not work. Verified live: a pane at revision 6 was sent
 screen change — and the revision was still 6 two seconds later, and still 6
 after that.
 
+The 0.8.2 revalidation did not repeat that write probe: no input was sent to any
+pane. During a 20.2-second passive sample of ten panes, 192 text-digest changes
+all happened in intervals where `PaneInfo.revision` also moved, so that passive
+sample alone neither reproduces nor disproves the 0.8.0 capture. The 0.8.2
+implementation still makes the semantics unambiguous: `PaneInfo.revision` is
+`TerminalState.revision`, which changes with the stripped terminal title, while
+`PaneReadResult.revision` is still hard-coded to zero. Upstream
+[Discussion #2831](https://github.com/herdrdev/herdr/discussions/2831) also
+records that the `pane.list` revision does not track content. The 0.8.0
+conclusion therefore still holds, with source and upstream-discussion
+provenance rather than a second pane-write capture.
+
 Whatever `PaneInfo.revision` counts, it is not "this pane produced output". Do
 not build change detection on it. This plugin hashes the text it read and
 compares the hash, which costs a round trip per pane per cycle and is the
@@ -101,25 +142,29 @@ reason the cycle needs a time budget at all.
 ### Trap 5 — the event machinery cannot watch a session for output
 
 Traps 3 and 4 rule out both revision counters, which leaves the question of why
-this plugin polls at all when the schema carries events. Checked against the
-bundled schema (`herdr api schema --json`, protocol 19) and a live 0.8.0 server.
-The capability needed is "tell me, on one connection, when any pane printed
-something", and it does not exist.
+this plugin polls at all when the schema carries events. This was checked
+against the bundled schemas for protocol 19 and protocol 20 and against a live
+0.8.2 server on 2026-08-27. The capability needed is "tell me, on one
+connection, when any pane printed something", and it still does not exist.
 
-`pane_output_changed` **is** an event kind and `events.wait` will match it — but
-its `EventMatch` variant **requires a `pane_id`**. You can wait for output on one
-named pane, never on the session. Since the server answers one request per
-connection, covering a 37-pane session means 37 simultaneously blocked
-connections and 37 threads, each re-armed individually after every event. That is
-not a scanner; it is a workaround standing in for the subscription that is
-missing.
+`pane_output_changed` still exists as an `EventKind`, an `EventData` shape and
+an `EventMatch` variant, and that match still requires a `pane_id`. It is not a
+usable per-pane wait in production, either: a live 0.8.2 `events.wait` request
+for it returned `unsupported_event_wait_match` because production waits support
+pane agent-status matches only. Upstream
+[Discussion #2831](https://github.com/herdrdev/herdr/discussions/2831) confirms
+that no production path emits this event, and the plugin-manifest hook allowlist
+deliberately excludes it until high-volume output-change hook semantics exist.
 
-`events.subscribe` **does** stream many events down one connection — verified
-live: `subscription_started` followed by 51 further frames in five seconds. But
-its subscription enum has no `pane.output_changed` member. The pane-related
-members are `pane.created`, `pane.closed`, `pane.updated`, `pane.focused`,
-`pane.moved`, `pane.exited`, `pane.agent_detected`, `pane.output_matched`,
-`pane.agent_status_changed` and `pane.scroll_changed`.
+`events.subscribe` **does** stream many events down one connection. The 0.8.0
+capture saw `subscription_started` followed by 51 further frames in five
+seconds; a 0.8.2 `pane.updated` subscription saw the acknowledgement and 31
+frames in three seconds. But the subscription enum still has no
+`pane.output_changed` member: a live request for it was rejected as an unknown
+variant. The pane-related members remain `pane.created`, `pane.closed`,
+`pane.updated`, `pane.focused`, `pane.moved`, `pane.exited`,
+`pane.agent_detected`, `pane.output_matched`, `pane.agent_status_changed` and
+`pane.scroll_changed`.
 
 Two of those look like a way in and are not:
 
@@ -130,10 +175,11 @@ Two of those look like a way in and are not:
   recompute, `has_varied_body`, `plausible_secret_value` — and it asks the server
   to send the raw line containing the credential back over the socket into a code
   path that is not `scan.rs`. That breaks both of the rules in CONTRIBUTING.md.
-- `pane.updated` is subscribable session-wide but is not an output signal. Traps
-  3 and 4 above are the same finding from the other end: neither revision counter
-  moves when a pane produces output. A scanner built on `pane.updated` would miss
-  output while appearing to watch, which is the worst failure shape available.
+- `pane.updated` is subscribable session-wide but is not an output signal.
+  `PaneInfo.revision` has the title-oriented semantics described by trap 4, and
+  Discussion #2831 records same-status content changes that produce no signal.
+  A scanner built on `pane.updated` would miss output while appearing to watch,
+  which is the worst failure shape available.
 
 So the poll stays, and the cycle keeps its deadline and its rotation. Revisit if
 herdr adds a session-wide output-changed subscription; shortening the poll
@@ -146,6 +192,11 @@ Measured on a live session of 37 panes with about twenty agents running:
 `session.snapshot` answered in 0.02 s, and `pane.read` answered in **0.0 s for
 most panes but 0.7–1.7 s for some** — consistently the ones in split layouts
 with small viewports, and not correlated with how much text came back.
+
+The smaller 0.8.2 revalidation session did not reproduce that slow tail: 40
+reads across ten panes ranged from 0.0002 to 0.0042 s, with a 0.0006 s median.
+That is a measurement of this session, not evidence that the 0.8.0 busy-session
+worst case disappeared, so the deadline and rotation requirements remain.
 
 At a second a pane, thirty panes is half a minute. Two consequences for anything
 that polls every pane:
