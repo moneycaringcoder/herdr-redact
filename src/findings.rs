@@ -47,9 +47,6 @@ const STAMP_KEY: DigestKey = [0u8; 16];
 /// file is the only thing standing between a stored digest and a dictionary
 /// attack on a low-entropy secret.
 const PRIVATE: u32 = 0o600;
-/// A human-readable report note doubles as the suppression count's transport to
-/// [`Report`], whose stable public shape predates suppressions.
-pub(crate) const SUPPRESSIONS_NOTE_SUFFIX: &str = " permanent value suppression(s) active.";
 
 /// One exact value the user has permanently suppressed for one detection rule.
 ///
@@ -544,14 +541,10 @@ impl Store {
                 all.push(note);
             }
         }
-        if !self.suppressions.is_empty() {
-            all.push(format!(
-                "{}{SUPPRESSIONS_NOTE_SUFFIX}",
-                self.suppressions.len()
-            ));
-        }
+        let suppression_count = self.suppression_count();
         Report {
             findings: self.findings(),
+            suppression_count,
             notes: all,
             generated_at: crate::model::now(),
             ..Report::default()

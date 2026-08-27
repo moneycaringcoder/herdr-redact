@@ -13,10 +13,26 @@ release, with the old name accepted as an alias for at least one minor cycle.
 
 ## [Unreleased]
 
+### Added
+
+- A rule for Grafana Cloud access-policy tokens,
+  `grafana_cloud_access_policy_token`. It accepts the provider's `glc_` prefix
+  only when the remainder is canonically padded standard base64 that decodes to
+  valid JSON with a `k` field containing exactly 40 hexadecimal characters.
+  Wrong-alphabet or malformed base64, non-JSON bodies, missing key fields, and
+  keys with the wrong length or charset stay quiet. The superseded `glc_`
+  declined-ledger entry has been removed.
+
 ### Fixed
 
 - Workspace and repository overlays now apply `backfill_lines` and `rule_packs`
   instead of silently ignoring them.
+- Suppression counts now travel as structured report data instead of being
+  encoded into and re-parsed from a human-readable note. Text, JSON, and SARIF
+  output all derive from the numeric count.
+- The upstream API contract canary now covers `pane.process_info`, including
+  the nested pane and foreground-process fields the plugin reads, so a breaking
+  schema change cannot leave process context silently unmonitored.
 
 ## [0.1.3] - 2026-08-25
 

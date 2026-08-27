@@ -29,6 +29,7 @@ Strong confidence means the format is structurally identifiable; weak confidence
 | `gitlab_pat` | GitLab personal access token | strong | `default` | 1 |
 | `gitlab_routable_token` | GitLab routable token | strong | `default` | 1 |
 | `grafana_service_account_token` | Grafana service account token | strong | `default` | 1 |
+| `grafana_cloud_access_policy_token` | Grafana Cloud access policy token | strong | `default` | 1 |
 | `huggingface_token` | Hugging Face token | strong | `default` | 1 |
 | `supabase_access_token` | Supabase personal access token | strong | `default` | 1 |
 | `sentry_auth_token` | Sentry auth token | strong | `default` | 1 |
@@ -225,6 +226,15 @@ Matches a `glpat-`, `glrt-`, `glrtr-`, or `glagent-` prefix, a base64url payload
 
 Matches the `glsa_` prefix, a 32-character alphanumeric body, and an eight-character lowercase hexadecimal checksum separated by an underscore. Grafana's own generator is the source of the checksum algorithm; the rule recomputes its IEEE CRC-32 and little-endian encoding, so a string of the right shape with the wrong checksum does not fire.
 
+## `grafana_cloud_access_policy_token`
+
+- **Label:** Grafana Cloud access policy token
+- **Confidence:** strong
+- **Pack:** `default` version 1
+- **Rotation guidance:** https://grafana.com/docs/grafana-cloud/security-and-account-management/authentication-and-permissions/access-policies/
+
+Matches the `glc_` prefix followed by canonically padded standard base64, then requires the decoded value to be a JSON object whose `k` field is exactly 40 hexadecimal characters. URL-safe or malformed base64, non-JSON bodies, and JSON without the right key field are rejected.
+
 ## `huggingface_token`
 
 - **Label:** Hugging Face token
@@ -394,7 +404,6 @@ These credential formats were considered and deliberately not shipped because pr
 | Mailgun API key | `key-` | The marker is a short English word and no provider-controlled source establishes the body grammar. |
 | Airtable personal access token | — | The provider documents the value as opaque and advises against pattern matching. |
 | Notion integration token | `ntn_` | The provider documents the value as opaque and advises against pattern matching. |
-| Grafana Cloud access policy token | `glc_` | The recorded reason — that the marker names a token rather than being part of the secret — is factually wrong: `glc_` is the literal opening of the value. Grafana's own Cloud API documentation shows `"token": "glc_eyJrIjoi…"`, and the body base64-decodes to a JSON object carrying a 40-character hexadecimal key, a name, and an id. A decode-and-validate rule in the style of the JWT rule is therefore available; this entry records the corrected fact rather than the old excuse. |
 | OpenAI organization identifier | `org-` | This value is an identifier rather than a credential. |
 | Datadog API key | — | There is no provider-assigned prefix at all. |
 | Segment write key | — | There is no provider-assigned prefix at all. |

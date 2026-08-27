@@ -617,6 +617,7 @@ it drifts, so it describes the scanner you are running rather than the one someb
 | `gitlab_pat` | `glpat-…` in its legacy shape, leaving routable tokens to the rule below | strong |
 | `gitlab_routable_token` | `glpat-`, `glrt-`, `glrtr-`, `glagent-` routable tokens whose checksum matches | strong |
 | `grafana_service_account_token` | `glsa_…` service-account tokens whose checksum matches | strong |
+| `grafana_cloud_access_policy_token` | `glc_…` tokens whose standard-base64 JSON carries a 40-character hexadecimal key | strong |
 | `npm_token` | `npm_…` and `npms_…` | strong |
 | `pypi_token` | `pypi-AgEIcHlwaS5vcmc…` | strong |
 | `sendgrid_api_key` | `SG.…` | strong |

@@ -6,7 +6,7 @@ in the upstream tree, which is byte-compared against the running code by
 upstream's own `generated_protocol_schema_artifact_is_current` test, or the
 output of `herdr api schema` from a local build.
 
-The contract below is deliberately narrow. It names the five methods redact
+The contract below is deliberately narrow. It names the six methods redact
 calls, the parameters it sends, and the response fields it reads, and nothing
 else. Upstream is free to add, remove, and rename anything redact does not
 touch; this only fails when the surface redact actually stands on moves.
@@ -30,13 +30,14 @@ MIN_PROTOCOL = 19
 
 # Request methods redact calls, with the parameters it sends.
 #
-# "required" means redact always sends the field, so the schema must still
-# accept it and still list it as required — a field that became optional
-# upstream is not a break for us, but one that disappeared is. "optional" means
-# redact sends it only sometimes; it must still exist.
+# "required" means the schema must accept the field and still list it as
+# required. "optional" means the schema must still accept the field but need
+# not require it. Herdr permits `pane_id` to be omitted from `pane.process_info`
+# to select the current pane, although redact always sends the pane explicitly.
 REQUESTS: dict[str, dict[str, tuple[str, ...]]] = {
     "session.snapshot": {"required": (), "optional": ()},
     "pane.read": {"required": ("pane_id", "source"), "optional": ("lines",)},
+    "pane.process_info": {"required": (), "optional": ("pane_id",)},
     "workspace.report_metadata": {
         "required": ("workspace_id", "source", "tokens"),
         # Omitted entirely on a pure delete: Herdr rejects a TTL alongside a
@@ -55,13 +56,15 @@ REQUESTS: dict[str, dict[str, tuple[str, ...]]] = {
 # Response variants redact reads, keyed by the `type` discriminant, with the
 # properties it reaches for on the variant itself.
 #
-# Both of these are nesting traps the protocol notes call out: the payload lives
-# under `snapshot` and under `read`, and a client that reads the result object
-# directly finds nothing. For a plugin whose job is to notice a credential, that
-# reads as "this pane is clean", so the nesting is part of the contract.
+# These are nesting traps the protocol notes call out: the payload lives under
+# `snapshot`, `read`, or `process_info`, and a client that reads the result
+# object directly finds nothing. For a plugin whose job is to notice a
+# credential, that reads as missing scan or finding context, so the nesting is
+# part of the contract.
 RESULTS: dict[str, tuple[str, ...]] = {
     "session_snapshot": ("snapshot",),
     "pane_read": ("read",),
+    "pane_process_info": ("process_info",),
 }
 
 # Response objects redact reads fields out of.
@@ -96,6 +99,19 @@ OBJECTS: dict[str, dict[str, tuple[str, ...]]] = {
         # is what stops a partial read being presented as a whole one.
         "required": ("text", "truncated"),
         "optional": ("pane_id",),
+    },
+    "PaneProcessInfo": {
+        # Herdr may not find a foreground process, but the array must remain
+        # available when it does. The pane id guards against associating
+        # process context with a finding from another pane.
+        "required": ("pane_id",),
+        "optional": ("foreground_processes",),
+    },
+    "PaneProcessInfoProcess": {
+        # `argv` and `cmdline` can contain the credential and are intentionally
+        # outside the contract. Only the safe process name and pid are read.
+        "required": ("name", "pid"),
+        "optional": (),
     },
 }
 

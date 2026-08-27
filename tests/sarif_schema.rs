@@ -670,14 +670,12 @@ fn populated_report() -> Report {
 
     Report {
         findings: vec![strong, weak, acknowledged],
+        suppression_count: 2,
         panes_scanned: 5,
         panes_skipped: 2,
         panes_unread: 1,
         panes_truncated: 3,
-        notes: vec![
-            "pane w0:p4 could not be read".to_string(),
-            "2 permanent value suppression(s) active.".to_string(),
-        ],
+        notes: vec!["pane w0:p4 could not be read".to_string()],
         generated_at: NOW,
     }
 }

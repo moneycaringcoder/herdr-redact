@@ -128,6 +128,14 @@ def response_definitions(schema: dict[str, Any]) -> dict[str, Any]:
     return schema["schemas"]["success_response"]["$defs"]
 
 
+def response_variant(schema: dict[str, Any], name: str) -> dict[str, Any]:
+    result = response_definitions(schema)["ResponseResult"]
+    for variant in result["oneOf"]:
+        if variant["properties"]["type"]["const"] == name:
+            return variant
+    raise AssertionError(f"fixture has no response variant for {name}")
+
+
 class FixtureTests(unittest.TestCase):
     def test_the_generated_fixture_passes(self) -> None:
         self.assertEqual(validate(contract_schema()), (MIN_PROTOCOL, len(REQUESTS)))
@@ -153,6 +161,30 @@ class FixtureTests(unittest.TestCase):
         for name in REQUEST_ENUMS:
             schema["schemas"]["request"]["$defs"][name]["enum"].append("future_member")
         self.assertEqual(validate(schema), (MIN_PROTOCOL + 7, len(REQUESTS)))
+
+
+class ProcessInfoContractTests(unittest.TestCase):
+    def test_process_info_is_present_and_valid(self) -> None:
+        schema = contract_schema()
+
+        self.assertEqual(validate(schema), (MIN_PROTOCOL, len(REQUESTS)))
+        self.assertEqual(
+            set(request_params(schema, "pane.process_info")["properties"]),
+            {"pane_id"},
+        )
+        self.assertEqual(
+            set(response_variant(schema, "pane_process_info")["properties"]),
+            {"type", "process_info"},
+        )
+        definitions = response_definitions(schema)
+        self.assertEqual(
+            set(definitions["PaneProcessInfo"]["properties"]),
+            {"pane_id", "foreground_processes"},
+        )
+        self.assertEqual(
+            set(definitions["PaneProcessInfoProcess"]["properties"]),
+            {"name", "pid"},
+        )
 
 
 class BreakageTests(unittest.TestCase):
