@@ -92,9 +92,18 @@ impl TestServer {
                             if reader.read_line(&mut line).unwrap_or(0) == 0 {
                                 continue;
                             }
-                            requests.lock().expect("requests").push(line);
+                            requests.lock().expect("requests").push(line.clone());
                             match replies.next() {
                                 Some(Reply::Line(reply)) => {
+                                    let reply = match serde_json::from_str::<Value>(&reply) {
+                                        Ok(mut response) => {
+                                            let request: Value = serde_json::from_str(&line)
+                                                .expect("fake request is JSON");
+                                            response["id"] = request["id"].clone();
+                                            response.to_string()
+                                        }
+                                        Err(_) => reply,
+                                    };
                                     let mut stream = &stream;
                                     let _ = stream.write_all(reply.as_bytes());
                                     let _ = stream.write_all(b"\n");
