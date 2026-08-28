@@ -141,7 +141,7 @@ impl TestServer {
                             };
                             let body = if refuse {
                                 json!({
-                                    "id": "redact:1",
+                                    "id": request["id"],
                                     "error": {
                                         "code": "pane_not_found",
                                         "message": "pane closed"
@@ -294,7 +294,7 @@ fn reply_to(request: &Value, truncated: bool) -> String {
         }
         _ => json!({"type": "ok"}),
     };
-    json!({"id": "redact:1", "result": result}).to_string()
+    json!({"id": request["id"], "result": result}).to_string()
 }
 
 fn sandbox(tag: &str) -> PathBuf {

@@ -79,7 +79,7 @@ impl TestServer {
                                 serde_json::from_str(line.trim_end()).expect("request is JSON");
                             let method = request["method"].as_str().unwrap_or_default().to_string();
                             methods.lock().expect("methods lock").push(method.clone());
-                            let body = reply_to(&method);
+                            let body = reply_to(&method, &request["id"]);
                             let mut stream = &stream;
                             let _ = stream.write_all(body.as_bytes());
                             let _ = stream.write_all(b"\n");
@@ -121,7 +121,7 @@ impl Drop for TestServer {
     }
 }
 
-fn reply_to(method: &str) -> String {
+fn reply_to(method: &str, id: &Value) -> String {
     let result = match method {
         "session.snapshot" => {
             serde_json::from_str::<Value>(include_str!("fixtures/session_snapshot.json"))
@@ -135,7 +135,7 @@ fn reply_to(method: &str) -> String {
         }
         _ => json!({"type": "ok"}),
     };
-    json!({"id": "redact:1", "result": result}).to_string()
+    json!({"id": id, "result": result}).to_string()
 }
 
 // ---------------------------------------------------------------------------
